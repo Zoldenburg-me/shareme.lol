@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+.env
+.data/
+.DS_Store
+host/deploy.local.yaml

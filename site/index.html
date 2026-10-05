@@ -1,0 +1,402 @@
+<title>share-me</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&family=Instrument+Serif:ital@1&family=JetBrains+Mono:wght@300;400;500&display=swap">
+<style>
+  /* Amber Study design system, Study theme (single dark theme).
+     Layout: centred silk hero built around one copyable install line, then the
+     explainer, three tool tiles, guardrail chips and a deep footer. */
+  :root {
+    color-scheme: dark;
+    --bg: #000; --bg-raised: #0a0909; --bg-deep: #080808; --bg-pill: #080707;
+    --surface-2: rgba(255,255,255,0.02); --surface-3: rgba(255,255,255,0.03);
+    --hairline: rgba(255,255,255,0.176); --line-card: rgba(239,230,223,0.1); --line-pill: rgba(242,228,216,0.07);
+    --ink: #efe6df; --ink-muted: #9b8f79; --ink-soft: #918a85; --body: #928b86; --ink-dim: #8e8882; --ink-faint: #5c5c5c;
+    --accent: #ec9117; --accent-deep: #ba6900; --on-accent: #242323; --ink-dark: #242323;
+    --art-a: #e68524; --art-b: #1a756b; --art-c: #082926; --art-d: #7a2e24; --art-ridge: #f2e6d6;
+    --neg: #cc4637;
+    --data-blue: #69a6f4; --data-violet: #c667d1;
+
+    --sans: "DM Sans", system-ui, sans-serif;
+    --serif: "Instrument Serif", Georgia, serif;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+
+    --gap-dense: 10px; --gap-cards: 20px; --gutter: 40px; --gutter-phone: 16px;
+    --section: 110px; --content-max: 1300px;
+    --radius-tag: 10px; --radius-button: 12px; --radius-glass: 14px; --radius-card: 15px; --radius-cover: 20px; --radius-pill: 60px;
+    --shadow-button: inset 0 0 0 1px rgba(12,14,18,0.18), inset 0 -2px 0 rgba(12,14,18,0.05);
+    --shadow-float: 0 30px 60px rgba(0,0,0,0.5);
+    --ease: cubic-bezier(.4,0,.2,1);
+    --spring: cubic-bezier(.34,1.32,.64,1);
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 400 16px/1.4 var(--sans); }
+  body::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50; opacity: .05; mix-blend-mode: soft-light;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  }
+  .wrap { max-width: var(--content-max); margin-inline: auto; padding-inline: var(--gutter); }
+  h1, h2, h3 { margin: 0; font-weight: 400; text-wrap: balance; }
+  p { margin: 0; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+  .wordmark { display: inline-flex; align-items: baseline; gap: .14em; font: 500 20px/1 var(--sans); letter-spacing: -.02em; color: var(--ink); text-decoration: none; }
+  .wordmark i { display: inline-block; width: .22em; height: .22em; background: var(--accent); }
+
+  .nav { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding-block: 22px; }
+  .nav-links { display: flex; align-items: center; gap: 22px; }
+  .nav-links a:not(.btn-accent) { color: var(--ink-soft); text-decoration: none; font: 400 13px/1.2 var(--sans); transition: color .3s var(--ease); }
+  .nav-links a:not(.btn-accent):hover { color: var(--ink); }
+  .btn-accent { display: inline-block; background: var(--accent); color: var(--on-accent); font: 400 13px/1.2 var(--sans); padding: 11px 14px; border-radius: var(--radius-button); text-decoration: none; box-shadow: var(--shadow-button); transition: background .3s var(--ease); }
+  .btn-accent:hover { background: linear-gradient(var(--accent), var(--accent-deep)); }
+
+  /* Hero */
+  .hero { position: relative; isolation: isolate; overflow: hidden; }
+  .hero canvas { position: absolute; left: 0; bottom: 0; width: 100%; height: 46%; z-index: -2; filter: blur(5px) saturate(1.15); transform: scale(1.06); }
+  .hero::after { content: ""; position: absolute; inset: auto 0 0 0; height: 18%; z-index: -1; background: linear-gradient(transparent, var(--bg)); }
+  .hero-copy { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; text-align: center; gap: 22px; padding-top: 64px; padding-bottom: 220px; }
+  .chip { position: relative; display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 6px 16px 6px 6px; border-radius: var(--radius-pill); overflow: hidden; background: linear-gradient(rgba(255,255,255,.08) -100%, rgba(255,255,255,.05) 100%); border: 1px solid rgba(255,255,255,.05); font-size: 14px; color: var(--ink); text-decoration: none; max-width: 100%; }
+  .chip::before { content: ""; position: absolute; inset: -60%; background: conic-gradient(from 0deg, transparent 0 70%, rgba(255,255,255,.9) 80%, transparent 90%); opacity: .2; animation: shine 9s linear infinite; z-index: -1; }
+  .chip b { font: 300 12px/10px var(--mono); letter-spacing: -.5px; color: var(--ink-dark); padding: 9px 10px; border-radius: 26px; background: linear-gradient(var(--accent), var(--accent-deep)); border: 2px solid rgba(255,255,255,.15); flex: none; }
+  .chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @keyframes shine { to { transform: rotate(1turn); } }
+  .hero h1 { display: grid; gap: 4px; }
+  .display { font: 400 clamp(40px, 6.4vw, 63px)/0.92 var(--sans); }
+  .emphasis { font: italic 400 clamp(42px, 6.7vw, 66px)/1.3 var(--serif); }
+  .lede { font: 400 19px/1.3 var(--sans); color: var(--ink-soft); max-width: 46ch; }
+  .w { display: inline-block; white-space: pre; animation: wordIn .6s var(--ease) both; animation-delay: calc(var(--i) * 55ms); }
+  @keyframes wordIn { from { opacity: 0; filter: blur(10px); transform: translateY(10px); } }
+
+  /* Install switch */
+  .install { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; justify-items: center; gap: 18px; width: 100%; max-width: 760px; margin-top: 18px; }
+  .seg { display: inline-flex; flex-wrap: wrap; justify-content: center; gap: 4px; padding: 5px; border-radius: var(--radius-pill); background: var(--bg-pill); border: 1px solid var(--line-pill); max-width: 100%; }
+  .seg button { font: 400 13px/1.2 var(--sans); color: var(--ink-soft); background: none; border: 0; border-radius: var(--radius-pill); padding: 10px 16px; cursor: pointer; transition: background .3s var(--ease), color .3s var(--ease); }
+  .seg button:hover { color: var(--ink); }
+  .seg button[aria-selected="true"] { background: var(--accent); color: var(--on-accent); box-shadow: var(--shadow-button); }
+  .seg .mono { font-family: var(--mono); font-size: 12px; margin-right: 4px; }
+  .cmd-panel { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 12px; justify-items: center; width: 100%; }
+  .cmd { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 14px 14px 20px; border-radius: var(--radius-button); background: rgba(10,9,9,.82); border: 1px solid var(--line-card); box-shadow: var(--shadow-float); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); text-align: left; }
+  .cmd code { flex: 1; min-width: 0; font: 400 14px/1.5 var(--mono); color: var(--ink); overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .cmd code::-webkit-scrollbar { display: none; }
+  .cmd .p { color: var(--accent); margin-right: 10px; user-select: none; }
+  .cmd.prompt code { white-space: normal; }
+  .copy-btn { flex: none; display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: var(--radius-tag); border: 1px solid var(--hairline); background: var(--surface-3); color: var(--ink); cursor: pointer; transition: background .3s var(--ease); }
+  .copy-btn:hover { background: rgba(255,255,255,.07); }
+  .copy-btn svg { width: 16px; height: 16px; }
+  .copy-btn[data-state="done"] { color: var(--accent); }
+  .hint { font: italic 400 20px/1.2 var(--serif); color: var(--ink-dim); }
+  .hint .arrow { font-style: normal; font-family: var(--sans); margin-right: 6px; }
+  .first-time { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; font: 400 12px/16px var(--mono); color: var(--ink-soft); }
+  .first-time code { color: var(--ink); background: var(--surface-3); border: 1px solid var(--line-card); border-radius: var(--radius-tag); padding: 6px 10px; overflow-wrap: anywhere; }
+
+  /* Below the fold */
+  section { padding-block: var(--section); }
+  .pill { display: inline-block; font: 400 12.8px/16.64px var(--mono); color: var(--ink-muted); background: var(--bg-pill); border: 1px solid var(--line-pill); border-radius: var(--radius-pill); padding: 7px 14px; }
+  .head { display: grid; gap: 16px; justify-items: start; margin-bottom: 36px; }
+  .head h2 { font: 400 35px/1.1 var(--sans); }
+  .head h2 em { font: italic 400 1.1em/1 var(--serif); color: var(--ink); }
+  .head h2 .q { color: var(--ink-muted); }
+  .explainer canvas { display: block; width: 100%; height: auto; border-radius: var(--radius-cover); background: var(--bg-deep); }
+  .tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--gap-dense); margin-top: var(--gap-cards); }
+  .tool { padding: 24px 28px; border-radius: var(--radius-cover); background: var(--surface-2); display: grid; gap: 6px; min-width: 0; }
+  .tool code { font: 500 15px/1.3 var(--mono); color: var(--accent); }
+  .tool span { color: var(--ink-soft); }
+  .guards { display: flex; flex-wrap: wrap; gap: var(--gap-dense); margin-top: 28px; }
+  .guards span { font: 400 12.8px/16.64px var(--mono); color: var(--ink-soft); background: var(--bg-pill); border: 1px solid var(--line-pill); border-radius: var(--radius-pill); padding: 8px 14px; }
+
+  footer { background: var(--bg-deep); border-top: 1px solid var(--line-card); }
+  footer .wrap { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding-block: 32px; }
+  footer p { font: 400 12px/16px var(--mono); color: var(--ink-soft); }
+
+  @media (max-width: 900px) { .tools { grid-template-columns: 1fr; } }
+  @media (max-width: 640px) {
+    .wrap { padding-inline: var(--gutter-phone); }
+    section { padding-block: 72px; }
+    .hero-copy { padding-top: 36px; padding-bottom: 200px; }
+    .lede { font-size: 17px; }
+    .nav-links a:not(.btn-accent) { display: none; }
+    .seg button { padding: 9px 12px; }
+    .cmd { padding-left: 14px; }
+    .cmd code { font-size: 12.5px; }
+    .head h2 { font-size: 28px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<header class="hero" id="top">
+  <canvas id="silk" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <nav class="nav" aria-label="Primary">
+      <a class="wordmark" href="#top">share-me<i aria-hidden="true"></i></a>
+      <div class="nav-links">
+        <a href="https://shareme.lol/setup">Setup guide</a>
+        <a class="btn-accent" href="#install">Install</a>
+      </div>
+    </nav>
+    <div class="hero-copy">
+      <a class="chip" href="#install"><b>MCP</b><span>Works with Claude Code, Codex, Cursor and more</span></a>
+      <h1>
+        <span class="display reveal">Hand your human a link</span>
+        <span class="emphasis reveal">not an attachment</span>
+      </h1>
+      <p class="lede">Your agent turns any file it makes into a link that deletes itself.</p>
+
+      <div class="install" id="install">
+        <div class="seg" role="tablist" aria-label="Choose your agent">
+          <button role="tab" id="tab-agents" aria-controls="p-agents" aria-selected="true" type="button"><span class="mono">&gt;_</span>Agents</button>
+          <button role="tab" id="tab-claude" aria-controls="p-claude" aria-selected="false" tabindex="-1" type="button">Claude Code</button>
+          <button role="tab" id="tab-codex" aria-controls="p-codex" aria-selected="false" tabindex="-1" type="button">Codex</button>
+          <button role="tab" id="tab-cursor" aria-controls="p-cursor" aria-selected="false" tabindex="-1" type="button">Cursor</button>
+          <button role="tab" id="tab-desktop" aria-controls="p-desktop" aria-selected="false" tabindex="-1" type="button">Claude Desktop</button>
+        </div>
+
+        <div class="cmd-panel" role="tabpanel" id="p-agents" aria-labelledby="tab-agents">
+          <div class="cmd prompt"><code>Set up share-me from https://shareme.lol/setup</code><button class="copy-btn" type="button" aria-label="Copy the setup prompt"></button></div>
+          <p class="hint"><span class="arrow" aria-hidden="true">↑</span>paste this into your agent chat</p>
+        </div>
+
+        <div class="cmd-panel" role="tabpanel" id="p-claude" aria-labelledby="tab-claude" hidden>
+          <div class="cmd"><code><span class="p">&gt;</span>claude mcp add share-me --scope user -- npx -y share-me-mcp</code><button class="copy-btn" type="button" aria-label="Copy the Claude Code command"></button></div>
+          <p class="hint"><span class="arrow" aria-hidden="true">↑</span>run this in your terminal</p>
+        </div>
+
+        <div class="cmd-panel" role="tabpanel" id="p-codex" aria-labelledby="tab-codex" hidden>
+          <div class="cmd"><code><span class="p">&gt;</span>codex mcp add share-me -- npx -y share-me-mcp</code><button class="copy-btn" type="button" aria-label="Copy the Codex command"></button></div>
+          <p class="hint"><span class="arrow" aria-hidden="true">↑</span>run this in your terminal</p>
+        </div>
+
+        <div class="cmd-panel" role="tabpanel" id="p-cursor" aria-labelledby="tab-cursor" hidden>
+          <div class="cmd"><code>{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp"] } } }</code><button class="copy-btn" type="button" aria-label="Copy the Cursor config"></button></div>
+          <p class="hint"><span class="arrow" aria-hidden="true">↑</span>add to ~/.cursor/mcp.json</p>
+        </div>
+
+        <div class="cmd-panel" role="tabpanel" id="p-desktop" aria-labelledby="tab-desktop" hidden>
+          <div class="cmd"><code>{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp"] } } }</code><button class="copy-btn" type="button" aria-label="Copy the Claude Desktop config"></button></div>
+          <p class="hint"><span class="arrow" aria-hidden="true">↑</span>add to claude_desktop_config.json, then restart</p>
+        </div>
+
+        <p class="first-time" id="first-time" hidden>First time on this machine? <code>npx -y share-me-mcp login https://shareme.lol</code></p>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section aria-labelledby="how-title">
+    <div class="head">
+      <span class="pill">How it works</span>
+      <h2 id="how-title"><span class="q">Attachments get forwarded and forgotten.</span> <em>These links delete themselves.</em></h2>
+    </div>
+    <div class="explainer">
+      <canvas id="explainer" width="1600" height="900" role="img" aria-label="Animation: an agent shares report.html and gets a link valid for 24 hours; a .env file is refused; when the lifetime ends the file is deleted and the link returns 404."></canvas>
+    </div>
+    <div class="tools">
+      <div class="tool"><code>share_file</code><span>File in, link out.</span></div>
+      <div class="tool"><code>list_links</code><span>See what's live and for how long.</span></div>
+      <div class="tool"><code>revoke_link</code><span>End a link now. The file is deleted.</span></div>
+    </div>
+    <div class="guards" aria-label="Guardrails">
+      <span>Allowlisted folders only</span>
+      <span>Secret scan before upload</span>
+      <span>File type checked on the host</span>
+      <span>Links expire, 24 h by default</span>
+      <span>Your own host on Akash</span>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a class="wordmark" href="#top">share-me<i aria-hidden="true"></i></a>
+    <p>Self-host the file host on Akash Network · <a href="https://shareme.lol/setup">Setup guide</a></p>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const tok = (n) => getComputedStyle(document.documentElement).getPropertyValue('--' + n).trim();
+  const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Headline reveal: split into words; text stays readable if this never runs.
+  if (!REDUCED) {
+    let i = 0;
+    document.querySelectorAll('.reveal').forEach((el) => {
+      const parts = el.textContent.split(/(\s+)/);
+      el.textContent = '';
+      parts.forEach((w) => {
+        if (/^\s+$/.test(w)) { el.append(w); return; }
+        const s = document.createElement('span');
+        s.className = 'w'; s.style.setProperty('--i', i++); s.textContent = w;
+        el.append(s);
+      });
+    });
+  }
+
+  // Install switch: tabs with arrow keys; the login hint shows for client tabs.
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  const firstTime = document.getElementById('first-time');
+  const select = (tab) => {
+    tabs.forEach((t) => {
+      const on = t === tab;
+      t.setAttribute('aria-selected', String(on));
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    });
+    firstTime.hidden = tab.id === 'tab-agents';
+  };
+  tabs.forEach((tab, i) => {
+    tab.addEventListener('click', () => select(tab));
+    tab.addEventListener('keydown', (e) => {
+      const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (!d) return;
+      const next = tabs[(i + d + tabs.length) % tabs.length];
+      select(next); next.focus();
+    });
+  });
+
+  // Copy buttons (icon), falling back to selecting the text. The ">" prompt is not copied.
+  const COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+  const DONE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+  document.querySelectorAll('.copy-btn').forEach((btn) => {
+    btn.innerHTML = COPY_ICON;
+    btn.addEventListener('click', () => {
+      const code = btn.parentElement.querySelector('code');
+      const text = [...code.childNodes].filter((n) => !(n.classList && n.classList.contains('p'))).map((n) => n.textContent).join('').trim();
+      const done = () => { btn.innerHTML = DONE_ICON; btn.dataset.state = 'done'; setTimeout(() => { btn.innerHTML = COPY_ICON; delete btn.dataset.state; }, 1500); };
+      const fallback = () => { const r = document.createRange(); r.selectNodeContents(code); const s = getSelection(); s.removeAllRanges(); s.addRange(r); };
+      try { navigator.clipboard.writeText(text).then(done, fallback); } catch { fallback(); }
+    });
+  });
+
+  // HeroSilk: WebGL silk band coloured from the art-* tokens.
+  (() => {
+    const canvas = document.getElementById('silk');
+    const gl = canvas.getContext('webgl');
+    if (!gl) { canvas.style.background = 'radial-gradient(60% 40% at 40% 80%, ' + tok('art-a') + ', transparent 70%)'; return; }
+    const FRAG = `
+      precision mediump float;
+      uniform vec2 res; uniform float t;
+      uniform vec3 cA, cB, cC, cD, cR;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
+        return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
+      float fbm(vec2 p){ float v = 0., a = .5; for (int i = 0; i < 4; i++){ v += a*noise(p); p *= 2.; a *= .5; } return v; }
+      void main(){
+        vec2 uv = gl_FragCoord.xy / res;
+        float x = uv.x * res.x / res.y;
+        float w = .30 + .07*sin(x*1.2 + t*.22) + .04*sin(x*2.9 - t*.17) + .06*(fbm(vec2(x*.7, t*.04)) - .5);
+        float d = uv.y - w;
+        float body  = exp(-d*d*90.) * .55;
+        float glow  = exp(-d*d*14.) * .18;
+        float f1 = exp(-pow(d + .020, 2.) * 3200.);
+        float f2 = exp(-pow(d - .030 - .020*sin(x*3.1 + t*.30), 2.) * 1400.) * .55;
+        float f3 = exp(-pow(d - .075 - .030*sin(x*1.7 - t*.24), 2.) * 700.) * .35;
+        float crease = .35 + .65 * smoothstep(-.6, .9, sin(x*5.5 + d*55. + t*.35 + fbm(vec2(x*2., t*.1))*3.));
+        float hue = fbm(vec2(x*.5 + t*.02, uv.y*1.6));
+        float side = smoothstep(.25, .75, uv.x + (hue - .5) * .5 + .06*sin(t*.15));
+        vec3 col = mix(cA, cB, side);
+        col = mix(col, cC, smoothstep(.55, .85, hue) * .7);
+        col = mix(col, cD, smoothstep(.38, .22, hue) * (1. - side) * .5);
+        vec3 c = col * (body*crease + glow + f2*crease + f3) + mix(cR, col, .35) * f1 * (.5 + .5*crease);
+        c *= 1. - smoothstep(.42, .72, uv.y);
+        gl_FragColor = vec4(c, 1.);
+      }`;
+    const VERT = 'attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}';
+    const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o); if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+    const prog = gl.createProgram();
+    try { gl.attachShader(prog, sh(gl.VERTEX_SHADER, VERT)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FRAG)); gl.linkProgram(prog); }
+    catch (e) { console.error('HeroSilk:', e); return; }
+    gl.useProgram(prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    const hex = (h) => { h = h.replace('#', ''); if (h.length === 3) h = [...h].map((c) => c + c).join(''); const n = parseInt(h, 16); return Number.isNaN(n) ? [1,0,1] : [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
+    [['cA','art-a'],['cB','art-b'],['cC','art-c'],['cD','art-d'],['cR','art-ridge']].forEach(([u, t]) => gl.uniform3fv(gl.getUniformLocation(prog, u), hex(tok(t))));
+    const size = () => { const r = canvas.getBoundingClientRect(); canvas.width = Math.max(1, Math.round(r.width * .5)); canvas.height = Math.max(1, Math.round(r.height * .5)); gl.viewport(0, 0, canvas.width, canvas.height); };
+    const draw = (ms) => { gl.uniform2f(gl.getUniformLocation(prog, 'res'), canvas.width, canvas.height); gl.uniform1f(gl.getUniformLocation(prog, 't'), ms / 1000); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); };
+    size(); addEventListener('resize', () => { size(); if (REDUCED) draw(12000); });
+    if (REDUCED) { draw(12000); return; }
+    let raf = 0; const loop = (ms) => { draw(ms); raf = requestAnimationFrame(loop); };
+    new IntersectionObserver(([e]) => { if (e.isIntersecting && !raf) raf = requestAnimationFrame(loop); if (!e.isIntersecting) { cancelAnimationFrame(raf); raf = 0; } }).observe(canvas);
+  })();
+
+  // Explainer: a link's lifetime, 13.6 s loop (step, type, follow, reset).
+  (() => {
+    const cv = document.getElementById('explainer'), c = cv.getContext('2d');
+    const F = { sans: '"DM Sans", system-ui, sans-serif', mono: '"JetBrains Mono", ui-monospace, monospace' };
+    const W = 1600, H = 900, LOOP = 13.6, TYPE = 38, AX = 690, X0 = 470, X1 = W - 470;
+    const ease = (t) => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+    const seg = (t, a, b) => ease(Math.max(0, Math.min(1, (t - a) / (b - a))));
+    const rr = (x, y, w, h, r) => { c.beginPath(); c.roundRect(x, y, w, h, r); };
+    const txt = (s, x, y, font, color, align = 'left') => { c.save(); c.font = font; c.fillStyle = color; c.textAlign = align; c.fillText(s, x, y); c.restore(); };
+    const CAPS = [[.6, 3.4, 'share_file report.html'], [3.6, 6.2, 'checks pass: link live for 24 h'], [6.6, 9.4, 'share_file .env: refused'], [9.6, 12.4, 'TTL reached: deleted, link 404']];
+    const grainTile = (() => { const g = document.createElement('canvas'); g.width = g.height = 256; const x = g.getContext('2d'), d = x.createImageData(256, 256); for (let i = 0; i < d.data.length; i += 4) { const v = Math.random() * 255; d.data[i] = d.data[i+1] = d.data[i+2] = v; d.data[i+3] = 255; } x.putImageData(d, 0, 0); return g; })();
+
+    const frame = (sec) => {
+      const t = sec % LOOP, back = 1 - seg(t, 12.4, 13.4);
+      c.fillStyle = tok('bg-deep'); c.fillRect(0, 0, W, H);
+      c.fillStyle = tok('bg-raised'); rr(30, 30, W - 60, H - 60, 40); c.fill();
+      c.strokeStyle = tok('line-card'); c.lineWidth = 2; c.stroke();
+      txt('A share-me link, start to finish', 110, 140, '400 50px ' + F.sans, tok('ink'));
+      const fade = (x0, x1, col) => { const g = c.createLinearGradient(x0, 0, x1, 0); g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)'); c.save(); c.globalAlpha = .28; c.fillStyle = g; c.fillRect(Math.min(x0, x1), 230, Math.abs(x1 - x0), 540); c.restore(); };
+      fade(90, 420, tok('art-b')); fade(W - 90, W - 420, tok('accent'));
+      c.save(); c.strokeStyle = 'rgba(255,255,255,.08)'; c.setLineDash([2, 8]);
+      for (let x = 160; x < W - 100; x += 180) { c.beginPath(); c.moveTo(x, 230); c.lineTo(x, 770); c.stroke(); }
+      for (let y = 290; y < 770; y += 110) { c.beginPath(); c.moveTo(100, y); c.lineTo(W - 100, y); c.stroke(); }
+      c.restore();
+      c.strokeStyle = tok('ink'); c.lineWidth = 2; c.beginPath(); c.moveTo(300, AX); c.lineTo(W - 300, AX); c.stroke();
+      c.fillStyle = tok('ink'); c.beginPath(); c.moveTo(W - 290, AX); c.lineTo(W - 306, AX - 8); c.lineTo(W - 306, AX + 8); c.closePath(); c.fill();
+      txt('Time', W - 360, AX + 44, '400 22px ' + F.mono, tok('ink-soft'));
+      txt('shared', X0, AX + 44, '400 22px ' + F.mono, tok('ink-soft'), 'center');
+      txt('expires', X1, AX + 44, '400 22px ' + F.mono, tok('ink-soft'), 'center');
+      const band = seg(t, 3.6, 4.6) * back * (1 - seg(t, 10.6, 11.4));
+      if (band > 0) {
+        c.save(); c.setLineDash([8, 8]); c.strokeStyle = tok('accent'); c.lineWidth = 2; c.globalAlpha = .8 * band; c.strokeRect(X0, 300, X1 - X0, AX - 300);
+        c.globalAlpha = .07 * band; c.fillStyle = tok('accent'); c.fillRect(X0, 300, X1 - X0, AX - 300); c.restore();
+        c.save(); c.globalAlpha = band; txt('link lifetime · 24 h', (X0 + X1) / 2, 290, '400 18px ' + F.mono, tok('accent'), 'center'); c.restore();
+      }
+      const fileIn = seg(t, .9, 2.1) * back, fileOut = seg(t, 10.6, 11.4);
+      const fx = 140 + (X0 - 140) * fileIn;
+      if (fileOut < 1) {
+        c.save(); c.globalAlpha = 1 - fileOut;
+        const g = c.createLinearGradient(fx, 0, fx + 220, 0); g.addColorStop(0, tok('data-blue')); g.addColorStop(1, tok('data-violet'));
+        c.fillStyle = g; c.fillRect(fx, 520, 220, AX - 520);
+        txt('report.html', fx + 14, 506, '400 20px ' + F.mono, tok('data-blue'));
+        c.restore();
+      }
+      const refIn = seg(t, 6.6, 7.4), refOut = seg(t, 9.0, 9.4);
+      if (refIn > 0 && refOut < 1) {
+        const rx = 140 + 120 * refIn;
+        c.save(); c.globalAlpha = (.35 + .25 * Math.sin(t * 12)) * (1 - refOut); c.fillStyle = tok('neg'); c.fillRect(rx, 580, 160, AX - 580); c.restore();
+        c.save(); c.globalAlpha = 1 - refOut; txt('.env', rx + 12, 566, '400 20px ' + F.mono, tok('neg')); c.restore();
+      }
+      const now = 300 + (X0 - 300) * seg(t, .6, 1.6) + ((X0 + X1) / 2 - X0) * seg(t, 6.6, 7.6) + (X1 + 10 - (X0 + X1) / 2) * seg(t, 9.6, 10.6);
+      const nx = 300 + (now - 300) * back;
+      c.strokeStyle = tok('ink'); c.lineWidth = 2.5; c.beginPath(); c.moveTo(nx, 250); c.lineTo(nx, 780); c.stroke();
+      const cap = CAPS.find(([a, b]) => t >= a && t < b);
+      if (cap) {
+        const [a, b, s] = cap, n = Math.min(s.length, Math.floor((t - a) * 1000 / TYPE), Math.floor((b - t) * 1000 / (TYPE * .5)));
+        const right = nx > W - 620, cx = right ? nx - 18 : nx + 18;
+        c.save(); c.font = '400 22px ' + F.mono; const shown = s.slice(0, Math.max(0, n)); const wdt = c.measureText(shown).width; c.restore();
+        txt('>', right ? cx - wdt - 26 : cx, 390, '500 22px ' + F.mono, tok('accent'));
+        txt(shown, right ? cx - wdt : cx + 26, 390, '400 22px ' + F.mono, s.includes('refused') ? tok('neg') : tok('ink'));
+      }
+      txt('Illustrative', 110, H - 66, '400 16px ' + F.mono, tok('ink-faint'));
+      c.save(); c.globalAlpha = .3; c.globalCompositeOperation = 'overlay'; c.fillStyle = c.createPattern(grainTile, 'repeat'); c.fillRect(30, 30, W - 60, H - 60); c.restore();
+    };
+    const fontsReady = Promise.all(['400 40px "DM Sans"', '400 40px "JetBrains Mono"', '500 40px "JetBrains Mono"'].map((f) => document.fonts.load(f))).catch((e) => console.error('fonts:', e));
+    frame(5);
+    fontsReady.finally(() => {
+      if (REDUCED) { frame(5); return; }
+      let raf = 0; const t0 = performance.now();
+      const loop = (n) => { frame((n - t0) / 1000); raf = requestAnimationFrame(loop); };
+      new IntersectionObserver(([e]) => { if (e.isIntersecting && !raf) raf = requestAnimationFrame(loop); if (!e.isIntersecting) { cancelAnimationFrame(raf); raf = 0; } }).observe(cv);
+    });
+  })();
+})();
+</script>

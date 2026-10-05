@@ -1,0 +1,153 @@
+# share-me
+
+Let AI agents turn locally generated files into **expiring, unguessable links** that their human can forward to anyone, without attaching the file as a document.
+
+```
+agent ──share_file(path)──▶ share-me-mcp (your machine)
+                               │  allowlist check, then upload + bearer token
+                               ▼
+                         share-host (Akash Network)
+                               │  stores file, auto-deletes at expiry
+                               ▼
+               https://shareme.lol/f/<128-bit id>/report.html
+```
+
+| Package | Runs on | What it does |
+|---|---|---|
+| [`host/`](host) | Akash Network (Docker) | Accepts authenticated uploads, serves files at `/f/<id>/<name>`, deletes them when their TTL expires |
+| [`mcp/`](mcp) | Your machine (stdio) | MCP server exposing `share_file`, `list_links`, `revoke_link` to agents |
+
+## MCP tools
+
+| Tool | Input | Result |
+|---|---|---|
+| `share_file` | `path` (absolute), `ttl_hours?`, `filename?` | Public URL, expiry, link id. Disallowed file types are refused before uploading |
+| `list_links` | none | All active links |
+| `revoke_link` | `id` | Link stops working and the file is deleted immediately |
+
+## Security model
+
+**Threat model:** the allowlist, denylist and secret scan stop agents from *accidentally* (or via a careless prompt injection) sharing the wrong file. They are **not** a sandbox. An agent that also has a shell can copy any file into an allowed dir, or read `SHARE_API_TOKEN` from the MCP config and call the host directly. If you run agents that may be fully hostile, run the MCP server as a separate OS user and keep its config `0600`.
+
+- **Links** carry a random 128-bit id. Anyone who has the link can open it until it expires or is revoked.
+- **Auto-delete:** each file has a TTL. The default is 24 h; the host caps it at `MAX_TTL_SECONDS` (default 7 days). A sweeper deletes expired files every minute, and expired links return 404 straight away.
+- **Path allowlist:** the MCP server only shares files under `SHARE_ALLOWED_DIRS`. Symlinks are resolved and hard links are rejected. The file is opened once and its identity re-verified, then uploaded from that handle, so it can't be swapped after the check. Credential-looking paths (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `credentials*`, `*.tfstate`, `.ssh/`, `.aws/`, `.git/`, `.config/`, …) are refused even inside an allowed dir.
+- **Secret scan:** before upload, file contents are scanned for private keys and AWS, GitHub, Anthropic, OpenAI, Slack and Google API keys. A match blocks the share.
+- **File types:** only allowlisted extensions can be shared (default list below, narrow it with `ALLOWED_EXTENSIONS`). The host checks each file's leading bytes against its extension, so a binary renamed to `report.pdf` is rejected. Text types must not contain NUL bytes. The host sets `Content-Type` from the extension and ignores the uploader's header. Executables, scripts and archives other than `.zip` are never served.
+- **Storage quota:** the host refuses uploads with 507 once `MAX_TOTAL_MB` is used, so a full disk can't take it down.
+- **Upload, list and revoke** require `SHARE_API_TOKEN`, compared in constant time. The MCP server refuses plain `http://` to a remote host.
+- **Served files are untrusted:** responses carry `Content-Security-Policy: sandbox` (plus `frame-ancestors 'none'`), `nosniff`, `no-referrer`, `noindex` and `no-store`, so an agent-written HTML page can't run scripts on your share domain. Use a dedicated domain that hosts nothing else.
+- **Akash caveats:** SDL env values are visible to the provider you lease from. A redeploy or a provider change can wipe the persistent volume, which kills live links early.
+
+## Setup
+
+### 1. Generate a token
+
+```bash
+openssl rand -base64 48
+```
+
+### 2. Build and push the host image
+
+Akash providers run `linux/amd64`, so the image must be built for that platform, even on an Apple Silicon Mac.
+
+**Easiest, with no local Docker:** push this repo to GitHub. The [`host-image`](.github/workflows/host-image.yml) workflow runs the tests, builds the amd64 image and pushes it to `ghcr.io/zoldenburg-me/share-me-host:latest`. Then, in GitHub, open **Packages → share-me-host → Package settings** and set the visibility to **Public** so Akash can pull it.
+
+**Or build locally** with Docker Desktop or OrbStack installed. Log in with a GitHub token that has `write:packages`, and use your GitHub username in lowercase:
+
+```bash
+docker buildx build --platform linux/amd64 -f host/Dockerfile -t ghcr.io/zoldenburg-me/share-me-host:0.1.0 --push .
+```
+
+### 3. Deploy on Akash
+
+Edit [`host/deploy.yaml`](host/deploy.yaml): set the image, token, `PUBLIC_BASE_URL` and the `accept` hostname. Then deploy it through [Akash Console](https://console.akash.network) by pasting the SDL and accepting a bid.
+
+**HTTPS:** Akash provider ingress is plain HTTP. To get TLS, point a DNS record for your hostname (e.g. `shareme.lol`) at the provider's ingress hostname. Use a Cloudflare proxied CNAME with SSL mode set to *Flexible*, or put your own TLS proxy in front. Check it works:
+
+```bash
+curl https://shareme.lol/healthz
+```
+
+### 4. Register the MCP server with your agent
+
+Easiest: paste this into your agent's chat and let it follow the guide the host serves at `/setup`:
+
+```
+Set up share-me from https://shareme.lol/setup
+```
+
+Or do it by hand. First log in once per machine. This prompts for the token, checks it against the host, and saves it to `~/.config/share-me/config.json` (mode 600):
+
+```bash
+npx -y share-me-mcp login https://shareme.lol
+```
+
+Then register the server:
+
+```bash
+claude mcp add share-me --scope user -- npx -y share-me-mcp
+```
+
+```bash
+codex mcp add share-me -- npx -y share-me-mcp
+```
+
+For Cursor (`~/.cursor/mcp.json`) or Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp"] } } }
+```
+
+Agents share files from `~/agent-output` by default (created automatically). Env vars still work and override the saved login.
+
+> The `npx` commands work once the `mcp/` package is published to npm as `share-me-mcp` (`npm publish -w mcp`). Until then, use `node /path/to/share-me/mcp/dist/index.js` in place of `npx -y share-me-mcp`.
+
+## Configuration
+
+**Host** (env in `deploy.yaml`)
+
+| Var | Default | |
+|---|---|---|
+| `SHARE_API_TOKEN` | required | ≥ 32 chars |
+| `PUBLIC_BASE_URL` | required | Base for returned links |
+| `DEFAULT_TTL_SECONDS` | `86400` | Used when the agent doesn't pass `ttl_hours` |
+| `MAX_TTL_SECONDS` | `604800` | Hard cap on any TTL |
+| `MAX_FILE_MB` | `100` | Upload size limit. Keep the SDL `max_body_size` ≥ this |
+| `MAX_TOTAL_MB` | `9216` | Storage quota across all live files. Keep it below the volume size |
+| `ALLOWED_EXTENSIONS` | all known types | Comma- or space-separated subset, e.g. `pdf,png,md`. Known types: `pdf html htm md txt log csv json xml docx xlsx pptx zip png jpg jpeg gif webp svg mp4 webm mp3 wav`. To add a type, add it to [`host/src/fileTypes.ts`](host/src/fileTypes.ts) with its content type and signature |
+| `SWEEP_INTERVAL_SECONDS` | `60` | How often expired files are deleted |
+| `DATA_DIR` / `PORT` | `/data` / `8080` | |
+
+**MCP** (see [`.env.example`](.env.example))
+
+| Var | Default | |
+|---|---|---|
+| `SHARE_HOST_URL` | from `login` | https, unless it's localhost |
+| `SHARE_API_TOKEN` | from `login` | Same as the host |
+| `SHARE_ALLOWED_DIRS` | `~/agent-output` | Absolute dirs, separated by `:` (`;` on Windows) |
+| `SHARE_DEFAULT_TTL_HOURS` | `24` | |
+| `SHARE_MAX_FILE_MB` | `100` | Checked locally before uploading |
+| `SHARE_ALLOW_INSECURE_HTTP` | unset | `1` allows plain http to a remote host (not recommended) |
+
+## Development
+
+```bash
+npm test
+```
+
+```bash
+npm run test:coverage
+```
+
+```bash
+npm run typecheck
+```
+
+To run the host locally:
+
+```bash
+SHARE_API_TOKEN=$(openssl rand -hex 32) PUBLIC_BASE_URL=http://localhost:8080 DATA_DIR=./.data npm start -w host
+```
+
+(Run `npm run build` first.)

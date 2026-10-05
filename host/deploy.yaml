@@ -1,0 +1,65 @@
+# Akash SDL for the share host.
+# 1. Replace IMAGE, SHARE_API_TOKEN, PUBLIC_BASE_URL and the accept hostname below.
+# 2. Deploy with Akash Console (console.akash.network) or `provider-services tx deployment create deploy.yaml`.
+# NOTE: env values in an SDL are visible to the provider you lease from. Use a token dedicated to this host.
+---
+version: "2.0"
+
+services:
+  share-host:
+    image: ghcr.io/zoldenburg-me/share-me-host:latest
+    env:
+      - SHARE_API_TOKEN=REPLACE_WITH_OUTPUT_OF_openssl_rand_-base64_48
+      - PUBLIC_BASE_URL=https://shareme.lol
+      - DEFAULT_TTL_SECONDS=86400
+      - MAX_TTL_SECONDS=604800
+      - MAX_FILE_MB=100
+      - MAX_TOTAL_MB=9216          # keep below the 10Gi data volume
+      # Optional: narrow the shareable file types (default: every type the host knows, see README)
+      # - ALLOWED_EXTENSIONS=pdf,png,jpg,md,html,csv
+    expose:
+      - port: 8080
+        as: 80
+        accept:
+          - shareme.lol
+          - www.shareme.lol
+        to:
+          - global: true
+        http_options:
+          max_body_size: 104857600   # 100 MiB, matches MAX_FILE_MB; set explicitly, ingress default is lower
+          read_timeout: 60000
+          send_timeout: 60000
+    params:
+      storage:
+        data:
+          mount: /data
+          readOnly: false
+
+profiles:
+  compute:
+    share-host:
+      resources:
+        cpu:
+          units: 0.5
+        memory:
+          size: 512Mi
+        storage:
+          - size: 1Gi
+          - name: data
+            size: 10Gi
+            attributes:
+              persistent: true
+              class: beta3
+
+  placement:
+    dcloud:
+      pricing:
+        share-host:
+          denom: uakt
+          amount: 1000               # max bid in uakt per block; raise if you get no bids
+
+deployment:
+  share-host:
+    dcloud:
+      profile: share-host
+      count: 1
