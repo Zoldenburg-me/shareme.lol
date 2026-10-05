@@ -1,0 +1,9 @@
+{
+  "config": {
+    "ingress": [
+      { "hostname": "shareme.lol", "service": "http://share-host:8080" },
+      { "hostname": "www.shareme.lol", "service": "http://share-host:8080" },
+      { "service": "http_status:404" }
+    ]
+  }
+}

@@ -5,3 +5,4 @@ coverage/
 .data/
 .DS_Store
 host/deploy.local.yaml
+.private/
