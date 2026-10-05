@@ -3,7 +3,7 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { pipeline } from "node:stream";
 import type { HostConfig } from "./config.js";
 import { checkContent, contentTypeOf, extensionOf, HEAD_BYTES } from "./fileTypes.js";
-import { FALLBACK_LANDING } from "./landing.js";
+import { FALLBACK_LANDING, type LegalPages } from "./landing.js";
 import { renderSetupGuide } from "./setupGuide.js";
 import { peek } from "./peek.js";
 import { FileTooLargeError, type FileMeta, type FileStore } from "./store.js";
@@ -82,15 +82,21 @@ function requireAllowedExtension(filename: string, allowed: readonly string[]): 
 // File ids are bearer secrets: never write them to logs.
 const redactIds = (url: string | undefined) => (url ?? "").replace(/[A-Za-z0-9_-]{22}/g, "<id>");
 
-// The landing page is trusted, first-party HTML: fonts from Google, inline styles and scripts, no framing.
+// The landing page is trusted, first-party HTML: own fonts, inline styles and scripts, no framing.
 const LANDING_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "content-security-policy":
-    "default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-    "font-src https://fonts.gstatic.com; img-src 'self' data:; frame-ancestors 'none'",
+    "default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+    "font-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
   "cache-control": "no-cache",
+} as const;
+
+const FONT_HEADERS = {
+  "content-type": "font/woff2",
+  "x-content-type-options": "nosniff",
+  "cache-control": "public, max-age=31536000, immutable",
 } as const;
 
 function toPublic(meta: FileMeta, baseUrl: string) {
@@ -103,13 +109,21 @@ function toPublic(meta: FileMeta, baseUrl: string) {
   };
 }
 
-/** First-party pages: the landing page at / and the agent setup guide at /setup. */
+/** First-party pages: the landing page at /, the agent setup guide at /setup, and the legal pages. */
 export interface Pages {
   readonly landing: string;
   readonly setup: string;
+  readonly legal?: LegalPages;
+  readonly fonts?: ReadonlyMap<string, Buffer>;
 }
 
 const SETUP_PATHS = new Set(["/setup", "/llms.txt"]);
+const LEGAL_PATHS: Readonly<Record<string, keyof LegalPages>> = {
+  "/imprint": "imprint",
+  "/impressum": "imprint",
+  "/privacy": "privacy",
+  "/datenschutz": "privacy",
+};
 
 export function createServer(
   config: HostConfig,
@@ -166,6 +180,18 @@ export function createServer(
     if ((method === "GET" || method === "HEAD") && pathname === "/") {
       res.writeHead(200, LANDING_HEADERS);
       res.end(method === "HEAD" ? undefined : pages.landing);
+      return;
+    }
+    const font = pathname.startsWith("/fonts/") ? pages.fonts?.get(pathname.slice("/fonts/".length)) : undefined;
+    if ((method === "GET" || method === "HEAD") && font) {
+      res.writeHead(200, { ...FONT_HEADERS, "content-length": font.length });
+      res.end(method === "HEAD" ? undefined : font);
+      return;
+    }
+    const legalPage = pages.legal && Object.hasOwn(LEGAL_PATHS, pathname) ? pages.legal[LEGAL_PATHS[pathname]] : undefined;
+    if ((method === "GET" || method === "HEAD") && legalPage !== undefined) {
+      res.writeHead(200, LANDING_HEADERS);
+      res.end(method === "HEAD" ? undefined : legalPage);
       return;
     }
     if ((method === "GET" || method === "HEAD") && SETUP_PATHS.has(pathname)) {

@@ -1,8 +1,10 @@
 <title>share-me</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&family=Instrument+Serif:ital@1&family=JetBrains+Mono:wght@300;400;500&display=swap">
+<link rel="preload" href="/fonts/dm-sans.woff2" as="font" type="font/woff2" crossorigin>
 <style>
+  /* Fonts are self-hosted (SIL Open Font License, see site/fonts/README.md); no requests to Google. */
+  @font-face { font-family: "DM Sans"; font-style: normal; font-weight: 300 500; font-display: swap; src: url(/fonts/dm-sans.woff2) format("woff2"); }
+  @font-face { font-family: "Instrument Serif"; font-style: italic; font-weight: 400; font-display: swap; src: url(/fonts/instrument-serif-italic.woff2) format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 300 500; font-display: swap; src: url(/fonts/jetbrains-mono.woff2) format("woff2"); }
   /* Amber Study design system, Study theme (single dark theme).
      Layout: centred silk hero built around one copyable install line, then the
      explainer, three tool tiles, guardrail chips and a deep footer. */
@@ -213,7 +215,7 @@
 <footer>
   <div class="wrap">
     <a class="wordmark" href="#top">share-me<i aria-hidden="true"></i></a>
-    <p>Self-host the file host on Akash Network · <a href="https://shareme.lol/setup">Setup guide</a></p>
+    <p>Self-host the file host on Akash Network · <a href="https://shareme.lol/setup">Setup guide</a> · <a href="/imprint">Imprint</a> · <a href="/privacy">Privacy</a></p>
   </div>
 </footer>
 

@@ -4,8 +4,23 @@
     {
       "name": "share-host",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["--env-file=.env", "host/dist/index.js"],
+      "runtimeArgs": [
+        "--env-file=.env",
+        "host/dist/index.js"
+      ],
       "port": 8787
+    },
+    {
+      "name": "share-host-legal",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "PUBLIC_BASE_URL=https://shareme.lol",
+        "PORT=8788",
+        "node",
+        "--env-file=.env",
+        "host/dist/index.js"
+      ],
+      "port": 8788
     }
   ]
 }

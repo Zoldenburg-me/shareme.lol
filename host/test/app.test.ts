@@ -16,11 +16,12 @@ describe("host HTTP API", () => {
   let server: Server;
   let base: string;
   let clock: number;
+  let config: HostConfig;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "share-app-"));
     clock = Date.parse("2026-10-05T12:00:00Z");
-    const config: HostConfig = {
+    config = {
       apiToken: TOKEN,
       publicBaseUrl: "https://share.example.com",
       dataDir: dir,
@@ -35,6 +36,8 @@ describe("host HTTP API", () => {
     server = createServer(config, await FileStore.open(dir), () => clock, {
       landing: "<!doctype html><title>landing</title>",
       setup: "# share-me setup",
+      legal: { imprint: "<title>imprint</title>", privacy: "<title>privacy</title>" },
+      fonts: new Map([["dm-sans.woff2", Buffer.from("wOF2font")]]),
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -58,6 +61,8 @@ describe("host HTTP API", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(res.headers.get("content-security-policy")).toContain("font-src 'self'");
+    expect(res.headers.get("content-security-policy")).not.toContain("google");
     expect(await res.text()).toContain("<title>landing</title>");
     expect((await fetch(`${base}/`, { method: "HEAD" })).status).toBe(200);
   });
@@ -68,6 +73,37 @@ describe("host HTTP API", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
       expect(await res.text()).toBe("# share-me setup");
+    }
+  });
+
+  it("serves the imprint and privacy policy in English and German paths", async () => {
+    const expected = { "/imprint": "imprint", "/impressum": "imprint", "/privacy": "privacy", "/datenschutz": "privacy" };
+    for (const [path, title] of Object.entries(expected)) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(await res.text()).toBe(`<title>${title}</title>`);
+    }
+  });
+
+  it("serves its own fonts with a long cache lifetime", async () => {
+    const res = await fetch(`${base}/fonts/dm-sans.woff2`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("font/woff2");
+    expect(res.headers.get("cache-control")).toContain("immutable");
+    expect(await res.text()).toBe("wOF2font");
+    expect((await fetch(`${base}/fonts/missing.woff2`)).status).toBe(404);
+  });
+
+  it("has no legal pages on a host that does not publish them", async () => {
+    const bare = createServer(config, await FileStore.open(dir), () => clock, { landing: "", setup: "" });
+    await new Promise<void>((r) => bare.listen(0, "127.0.0.1", r));
+    try {
+      const res = await fetch(`http://127.0.0.1:${(bare.address() as AddressInfo).port}/imprint`);
+      expect(res.status).toBe(404);
+    } finally {
+      bare.closeAllConnections();
+      await new Promise((r) => bare.close(r));
     }
   });
 

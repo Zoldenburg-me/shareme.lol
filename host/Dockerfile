@@ -16,7 +16,8 @@ ENV NODE_ENV=production DATA_DIR=/data PORT=8080
 WORKDIR /app
 COPY host/package.json ./package.json
 COPY --from=build /app/host/dist ./dist
-COPY site/index.html ./site/index.html
+COPY site/index.html site/imprint.html site/privacy.html ./site/
+COPY site/fonts ./site/fonts
 RUN mkdir -p /data && chown node:node /data
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1

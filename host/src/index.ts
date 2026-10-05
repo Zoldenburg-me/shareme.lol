@@ -1,6 +1,8 @@
+import { dirname } from "node:path";
 import { createServer } from "./app.js";
 import { loadConfig } from "./config.js";
-import { loadLandingPage } from "./landing.js";
+import { loadFonts } from "./fonts.js";
+import { loadLandingPage, loadLegalPages } from "./landing.js";
 import { renderSetupGuide } from "./setupGuide.js";
 import { FileStore } from "./store.js";
 
@@ -10,6 +12,8 @@ async function main(): Promise<void> {
   const server = createServer(config, store, Date.now, {
     landing: await loadLandingPage(config.landingPage, config.publicBaseUrl),
     setup: renderSetupGuide(config.publicBaseUrl),
+    legal: await loadLegalPages(dirname(config.landingPage), config.publicBaseUrl),
+    fonts: await loadFonts(dirname(config.landingPage)),
   });
 
   const sweep = async () => {
