@@ -1,7 +1,12 @@
-# Akash SDL for the share host.
-# 1. Replace IMAGE, SHARE_API_TOKEN, PUBLIC_BASE_URL and the accept hostname below.
-# 2. Deploy with Akash Console (console.akash.network) or `provider-services tx deployment create deploy.yaml`.
-# NOTE: env values in an SDL are visible to the provider you lease from. Use a token dedicated to this host.
+# Akash SDL for the share host, reached through a Cloudflare Tunnel.
+#
+#   share-host   the file host; no public ingress, only reachable by cloudflared
+#   cloudflared  connects out to Cloudflare and serves https://shareme.lol
+#
+# Copy to deploy.local.yaml (gitignored), fill in the two tokens, deploy with Akash Console.
+# In Cloudflare Zero Trust -> Networks -> Tunnels -> your tunnel -> Public hostnames, route
+# shareme.lol and www.shareme.lol to service  HTTP  share-host:8080
+# NOTE: env values in an SDL are visible to the provider you lease from.
 ---
 version: "2.0"
 
@@ -13,27 +18,34 @@ services:
       - PUBLIC_BASE_URL=https://shareme.lol
       - DEFAULT_TTL_SECONDS=86400
       - MAX_TTL_SECONDS=604800
-      - MAX_FILE_MB=100
-      - MAX_TOTAL_MB=9216          # keep below the 10Gi data volume
-      # Optional: narrow the shareable file types (default: every type the host knows, see README)
+      - MAX_FILE_MB=95              # Cloudflare's free plan caps request bodies at 100 MB
+      - MAX_TOTAL_MB=9216           # keep below the 10Gi data volume
+      # Optional: narrow the shareable file types (default: every type the host knows)
       # - ALLOWED_EXTENSIONS=pdf,png,jpg,md,html,csv
     expose:
       - port: 8080
-        as: 80
-        accept:
-          - shareme.lol
-          - www.shareme.lol
         to:
-          - global: true
-        http_options:
-          max_body_size: 104857600   # 100 MiB, matches MAX_FILE_MB; set explicitly, ingress default is lower
-          read_timeout: 60000
-          send_timeout: 60000
+          - service: cloudflared
     params:
       storage:
         data:
           mount: /data
           readOnly: false
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.0
+    args:
+      - tunnel
+      - run
+    # Akash refuses a deployment with no global port. Nothing listens on 8081, so this
+    # public port leads nowhere (502); all real traffic arrives through the tunnel.
+    expose:
+      - port: 8081
+        as: 80
+        to:
+          - global: true
+    env:
+      - TUNNEL_TOKEN=REPLACE_WITH_TUNNEL_TOKEN_FROM_CLOUDFLARE
 
 profiles:
   compute:
@@ -50,16 +62,31 @@ profiles:
             attributes:
               persistent: true
               class: beta3
+    cloudflared:
+      resources:
+        cpu:
+          units: 0.25
+        memory:
+          size: 256Mi
+        storage:
+          - size: 512Mi
 
   placement:
     dcloud:
       pricing:
         share-host:
-          denom: uakt
-          amount: 1000               # max bid in uakt per block; raise if you get no bids
+          denom: uact
+          amount: 1000               # max bid per block; the accepted bid sets the price
+        cloudflared:
+          denom: uact
+          amount: 500
 
 deployment:
   share-host:
     dcloud:
       profile: share-host
+      count: 1
+  cloudflared:
+    dcloud:
+      profile: cloudflared
       count: 1

@@ -14,7 +14,7 @@ agent ──share_file(path)──▶ share-me-mcp (your machine)
 
 | Package | Runs on | What it does |
 |---|---|---|
-| [`host/`](host) | Akash Network (Docker) | Accepts authenticated uploads, serves files at `/f/<id>/<name>`, deletes them when their TTL expires |
+| [`host/`](host) | Akash Network (Docker), behind a Cloudflare Tunnel | Accepts authenticated uploads, serves files at `/f/<id>/<name>`, deletes them when their TTL expires |
 | [`mcp/`](mcp) | Your machine (stdio) | MCP server exposing `share_file`, `list_links`, `revoke_link` to agents |
 
 ## MCP tools
@@ -61,9 +61,39 @@ docker buildx build --platform linux/amd64 -f host/Dockerfile -t ghcr.io/zoldenb
 
 ### 3. Deploy on Akash
 
-Edit [`host/deploy.yaml`](host/deploy.yaml): set the image, token, `PUBLIC_BASE_URL` and the `accept` hostname. Then deploy it through [Akash Console](https://console.akash.network) by pasting the SDL and accepting a bid.
+Traffic reaches the host only through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/). A `cloudflared` sidecar in the same deployment dials out to Cloudflare, so `share-host` has no public port. You get end-to-end TLS, and the provider's ingress and IP are never exposed.
 
-**HTTPS:** Akash provider ingress is plain HTTP. To get TLS, point a DNS record for your hostname (e.g. `shareme.lol`) at the provider's ingress hostname. Use a Cloudflare proxied CNAME with SSL mode set to *Flexible*, or put your own TLS proxy in front. Check it works:
+**Create the tunnel** (once). You need the `cf` CLI logged in to the account that holds the `shareme.lol` zone:
+
+```bash
+cf tunnels create --config-src cloudflare --name share-me
+```
+
+Note the tunnel `id` it prints. Then point the tunnel's hostnames at the sidecar's view of the host ([`host/tunnel-config.json`](host/tunnel-config.json)):
+
+```bash
+cf tunnels config update <TUNNEL_ID> --body "$(cat host/tunnel-config.json)"
+```
+
+Route DNS to the tunnel. This replaces any existing `shareme.lol` record; delete the old one first if it exists:
+
+```bash
+cf dns records create -z shareme.lol --body '{"type":"CNAME","name":"shareme.lol","content":"<TUNNEL_ID>.cfargotunnel.com","proxied":true}'
+```
+
+```bash
+cf dns records create -z shareme.lol --body '{"type":"CNAME","name":"www","content":"<TUNNEL_ID>.cfargotunnel.com","proxied":true}'
+```
+
+Print the connector token:
+
+```bash
+cf tunnels token get <TUNNEL_ID>
+```
+
+**Deploy.** Edit [`host/deploy.yaml`](host/deploy.yaml): set the image, `SHARE_API_TOKEN`, `PUBLIC_BASE_URL` and `TUNNEL_TOKEN` (the output above). Don't commit the real values. Then deploy it through [Akash Console](https://console.akash.network) by pasting the SDL and accepting a bid. Set the zone's SSL mode to *Full* or *Full (strict)*; *Flexible* is no longer needed. Uploads go through Cloudflare, which rejects request bodies over 100 MB on free and pro plans, so the SDL sets `MAX_FILE_MB=95`.
+
+Check it works:
 
 ```bash
 curl https://shareme.lol/healthz
@@ -113,7 +143,7 @@ Agents share files from `~/agent-output` by default (created automatically). Env
 | `PUBLIC_BASE_URL` | required | Base for returned links |
 | `DEFAULT_TTL_SECONDS` | `86400` | Used when the agent doesn't pass `ttl_hours` |
 | `MAX_TTL_SECONDS` | `604800` | Hard cap on any TTL |
-| `MAX_FILE_MB` | `100` | Upload size limit. Keep the SDL `max_body_size` ≥ this |
+| `MAX_FILE_MB` | `100` | Upload size limit. Keep it under Cloudflare's 100 MB request limit (the SDL uses `95`) |
 | `MAX_TOTAL_MB` | `9216` | Storage quota across all live files. Keep it below the volume size |
 | `ALLOWED_EXTENSIONS` | all known types | Comma- or space-separated subset, e.g. `pdf,png,md`. Known types: `pdf html htm md txt log csv json xml docx xlsx pptx zip png jpg jpeg gif webp svg mp4 webm mp3 wav`. To add a type, add it to [`host/src/fileTypes.ts`](host/src/fileTypes.ts) with its content type and signature |
 | `SWEEP_INTERVAL_SECONDS` | `60` | How often expired files are deleted |
