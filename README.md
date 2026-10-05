@@ -99,6 +99,12 @@ Check it works:
 curl https://shareme.lol/healthz
 ```
 
+**Redeploy.** Every push to `main` that touches `host/` or `site/` builds `ghcr.io/zoldenburg-me/share-me-host:sha-<commit>`. Once that build finishes, switch the running deployment to it. This keeps the lease and the `/data` volume and needs `AKASH_CONSOLE_API_KEY` in `.env`:
+
+```bash
+node scripts/akash.mjs update
+```
+
 ### 4. Register the MCP server with your agent
 
 Easiest: paste this into your agent's chat and let it follow the guide the host serves at `/setup`:
