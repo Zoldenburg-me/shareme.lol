@@ -3,8 +3,9 @@
 //   node scripts/akash.mjs go             # create, wait for bids, lease a vetted provider
 //   node scripts/akash.mjs bids           # list bids for the saved dseq
 //   node scripts/akash.mjs lease <provider>   # accept that provider's bid
-//   node scripts/akash.mjs update [image] # switch share-host to a new image; keeps lease and /data
-//                                       # (default: the CI image of the current commit)
+//   node scripts/akash.mjs update [image] # switch share-host to a new image and resend its non-secret
+//                                       # env from the SDL; keeps lease, /data and the tokens
+//                                       # (default image: the CI image of the current commit)
 //   node scripts/akash.mjs status         # deployment + lease state (no secrets)
 //   node scripts/akash.mjs close          # close it; unspent funds return, /data is wiped
 //
@@ -77,6 +78,26 @@ function headImage() {
   return `ghcr.io/zoldenburg-me/share-me-host:sha-${sha}`;
 }
 
+// Env names that hold secrets: never resent by `update`, so they stay as stored.
+const SECRET_ENV = new Set(["SHARE_API_TOKEN", "TUNNEL_TOKEN"]);
+
+// share-host's env list from the SDL, minus secrets. The Console merges PATCHed env by name.
+function publicHostEnv() {
+  const lines = readSdl().split("\n");
+  const start = lines.findIndex((l) => /^  share-host:\s*$/.test(l));
+  const envAt = lines.findIndex((l, i) => i > start && /^    env:\s*$/.test(l));
+  if (start < 0 || envAt < 0) throw new Error("no share-host env block in host/deploy.local.yaml");
+  const entries = [];
+  for (const line of lines.slice(envAt + 1)) {
+    if (/^\s*#/.test(line) || !line.trim()) continue;
+    const item = /^      - ([A-Z0-9_]+)=(.*)$/.exec(line);
+    if (!item) break;
+    const value = item[2].replace(/\s+#.*$/, "").trim();
+    if (!SECRET_ENV.has(item[1])) entries.push([item[1], value]);
+  }
+  return Object.fromEntries(entries);
+}
+
 const need = () => { if (!state.dseq) throw new Error("no deployment yet — run go"); return state.dseq; };
 const [cmd, arg] = process.argv.slice(2);
 
@@ -110,10 +131,12 @@ if (cmd === "go") {
   if (!bid) throw new Error(`no open bid from ${arg}`);
   await leaseBid(bid);
 } else if (cmd === "update") {
-  // PATCH touches only the image; env values (tokens) stay as stored. Prints states only.
+  // PATCH sends the image and non-secret env; the tokens stay as stored. Prints states only.
   const image = arg ?? headImage();
   if (!/^ghcr\.io\/[\w./-]+:[\w.-]+$/.test(image)) throw new Error("usage: update [ghcr.io/<owner>/share-me-host:<tag>]");
-  const r = await api("PATCH", `/v1/deployments/${need()}`, { data: { services: { "share-host": { image } } } });
+  const env = publicHostEnv();
+  console.log(`share-host env sent: ${Object.keys(env).join(", ")}`);
+  const r = await api("PATCH", `/v1/deployments/${need()}`, { data: { services: { "share-host": { image, env } } } });
   const d = r.data ?? {};
   console.log(JSON.stringify({
     dseq: state.dseq,
