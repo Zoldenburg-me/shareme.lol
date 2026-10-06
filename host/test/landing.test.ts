@@ -54,16 +54,18 @@ describe("loadLegalPages", () => {
     dir = await mkdtemp(join(tmpdir(), "share-legal-"));
     await writeFile(join(dir, "imprint.html"), "<title>Imprint</title>");
     await writeFile(join(dir, "privacy.html"), "<title>Privacy</title>");
+    await writeFile(join(dir, "terms.html"), "<title>Terms</title>");
   });
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("loads the imprint and privacy policy on shareme.lol", async () => {
+  it("loads the imprint, privacy policy and terms on shareme.lol", async () => {
     const legal = await loadLegalPages(dir, "https://shareme.lol");
     expect(legal?.imprint).toContain("<title>Imprint</title>");
     expect(legal?.privacy).toContain("<title>Privacy</title>");
+    expect(legal?.terms).toContain("<title>Terms</title>");
   });
 
   it("publishes no legal pages on a self-hosted copy, since they name the shareme.lol operator", async () => {

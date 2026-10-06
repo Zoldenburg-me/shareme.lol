@@ -66,6 +66,8 @@ const LEGAL_PATHS: Readonly<Record<string, keyof LegalPages>> = {
   "/impressum": "imprint",
   "/privacy": "privacy",
   "/datenschutz": "privacy",
+  "/terms": "terms",
+  "/nutzungsbedingungen": "terms",
 };
 
 export function createServer(
