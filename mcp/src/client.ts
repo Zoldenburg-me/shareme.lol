@@ -24,6 +24,33 @@ export interface HostPolicy {
   readonly allowedExtensions: readonly string[];
   readonly maxFileBytes: number;
   readonly maxTtlSeconds: number;
+  /** Present for self-service tokens: storage used and allowed. */
+  readonly account?: { readonly id: string; readonly usedBytes: number; readonly quotaBytes: number };
+}
+
+export interface Signup {
+  readonly token: string;
+  readonly id: string;
+  readonly quotaBytes?: number;
+}
+
+const SIGNUP_TIMEOUT_MS = 30_000;
+
+async function errorDetail(res: Response): Promise<string> {
+  const detail = await res.json().then((b: { error?: string }) => b.error).catch(() => undefined);
+  return `Share host returned ${res.status}${detail ? `: ${detail}` : ""}`;
+}
+
+/** Ask a host with open signup for a new self-service token. */
+export async function signup(host: string, fetchImpl: typeof fetch = fetch): Promise<Signup> {
+  let res: Response;
+  try {
+    res = await fetchImpl(`${host}/api/tokens`, { method: "POST", signal: AbortSignal.timeout(SIGNUP_TIMEOUT_MS) });
+  } catch (err) {
+    throw new Error(`Could not reach share host at ${host}: ${(err as Error).message}`);
+  }
+  if (!res.ok) throw new Error(await errorDetail(res));
+  return (await res.json()) as Signup;
 }
 
 /** Thin client for the share host's authenticated /api/files endpoints. */
@@ -75,10 +102,7 @@ export class HostClient {
     } catch (err) {
       throw new Error(`Could not reach share host at ${this.baseUrl}: ${(err as Error).message}`);
     }
-    if (!res.ok) {
-      const detail = await res.json().then((b: { error?: string }) => b.error).catch(() => undefined);
-      throw new Error(`Share host returned ${res.status}${detail ? `: ${detail}` : ""}`);
-    }
+    if (!res.ok) throw new Error(await errorDetail(res));
     return res;
   }
 }

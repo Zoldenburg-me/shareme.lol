@@ -19,6 +19,15 @@ describe("loadConfig", () => {
       landingPage: "site/index.html",
       maxTotalBytes: 9 * 1024 * 1024 * 1024,
       allowedExtensions: Object.keys(FILE_TYPES).sort(),
+      openSignup: false,
+      tokenQuotaBytes: 250 * 1024 * 1024,
+      signupsPerIpPerHour: 5,
+      signupsPerDay: 500,
+      trustCfConnectingIp: false,
+      apiRequestsPerIpPerMinute: 120,
+      authFailuresPerIpPerHour: 30,
+      uploadsPerTokenPerHour: 60,
+      downloadsPerIpPerMinute: 300,
     });
   });
 
@@ -36,6 +45,11 @@ describe("loadConfig", () => {
     const config = loadConfig({ SHARE_API_TOKEN: TOKEN, PUBLIC_BASE_URL: "https://a.b", ALLOWED_EXTENSIONS: "pdf,png" });
     expect(config.allowedExtensions).toEqual(["pdf", "png"]);
     expect(() => loadConfig({ SHARE_API_TOKEN: TOKEN, PUBLIC_BASE_URL: "https://a.b", ALLOWED_EXTENSIONS: "exe" })).toThrow(/ALLOWED_EXTENSIONS/);
+  });
+
+  it("turns on open signup and Cloudflare client IPs only when asked", () => {
+    const config = loadConfig({ SHARE_API_TOKEN: TOKEN, PUBLIC_BASE_URL: "https://a.b", OPEN_SIGNUP: "1", TRUST_CF_CONNECTING_IP: "1", TOKEN_QUOTA_MB: "10" });
+    expect(config).toMatchObject({ openSignup: true, trustCfConnectingIp: true, tokenQuotaBytes: 10 * 1024 * 1024 });
   });
 
   it("throws on non-positive numeric settings", () => {

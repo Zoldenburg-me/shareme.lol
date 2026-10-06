@@ -4,7 +4,9 @@ import { loadConfig } from "./config.js";
 import { loadFonts } from "./fonts.js";
 import { loadLandingPage, loadLegalPages } from "./landing.js";
 import { renderSetupGuide } from "./setupGuide.js";
+import { SignupLimiter } from "./signupLimiter.js";
 import { FileStore } from "./store.js";
+import { TokenStore } from "./tokens.js";
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
@@ -14,6 +16,9 @@ async function main(): Promise<void> {
     setup: renderSetupGuide(config.publicBaseUrl),
     legal: await loadLegalPages(dirname(config.landingPage), config.publicBaseUrl),
     fonts: await loadFonts(dirname(config.landingPage)),
+  }, {
+    tokens: await TokenStore.open(config.dataDir),
+    limiter: new SignupLimiter(config.signupsPerIpPerHour, config.signupsPerDay),
   });
 
   const sweep = async () => {

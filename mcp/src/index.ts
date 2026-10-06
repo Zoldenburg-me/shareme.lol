@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { login, serve } from "./cli.js";
+import { login, serve, signup } from "./cli.js";
 
 const [command, arg] = process.argv.slice(2);
 
 try {
   if (command === "login") await login(arg);
+  else if (command === "signup") await signup(arg);
   else await serve();
 } catch (err) {
   // stdout is the MCP channel; diagnostics go to stderr.

@@ -13,6 +13,7 @@ const PATTERNS: ReadonlyArray<readonly [kind: string, pattern: RegExp]> = [
   ["OpenAI API key", /\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}/],
   ["Slack token", /\bxox[abpr]-[A-Za-z0-9-]{10,}/],
   ["Google API key", /\bAIza[0-9A-Za-z_-]{35}/],
+  ["share-me token", /\bsm_[A-Za-z0-9_-]{43}\b/],
 ];
 
 const match = (text: string) => PATTERNS.find(([, re]) => re.test(text))?.[0];

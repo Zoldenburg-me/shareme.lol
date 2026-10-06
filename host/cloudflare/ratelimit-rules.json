@@ -1,0 +1,14 @@
+[
+  {
+    "description": "share-me: flood guard for /api and /f (the host enforces the finer limits)",
+    "expression": "(http.request.uri.path wildcard \"/api/*\") or (http.request.uri.path wildcard \"/f/*\")",
+    "action": "block",
+    "ratelimit": {
+      "characteristics": ["cf.colo.id", "ip.src"],
+      "period": 10,
+      "requests_per_period": 60,
+      "mitigation_timeout": 10
+    },
+    "enabled": true
+  }
+]

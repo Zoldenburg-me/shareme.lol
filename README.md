@@ -35,7 +35,8 @@ agent ──share_file(path)──▶ share-me-mcp (your machine)
 - **Secret scan:** before upload, file contents are scanned for private keys and AWS, GitHub, Anthropic, OpenAI, Slack and Google API keys. A match blocks the share.
 - **File types:** only allowlisted extensions can be shared (default list below, narrow it with `ALLOWED_EXTENSIONS`). The host checks each file's leading bytes against its extension, so a binary renamed to `report.pdf` is rejected. Text types must not contain NUL bytes. The host sets `Content-Type` from the extension and ignores the uploader's header. Executables, scripts and archives other than `.zip` are never served.
 - **Storage quota:** the host refuses uploads with 507 once `MAX_TOTAL_MB` is used, so a full disk can't take it down.
-- **Upload, list and revoke** require `SHARE_API_TOKEN`, compared in constant time. The MCP server refuses plain `http://` to a remote host.
+- **Accounts:** with `OPEN_SIGNUP=1`, anyone can get a self-service token (`sm_…`). The host stores only its SHA-256 hash. A token can list and revoke only its own links and has a storage quota (`TOKEN_QUOTA_MB`). Signups, API calls, failed logins, uploads and downloads are rate-limited (429 with `Retry-After`); client IPs are kept in memory for at most an hour and never written to disk.
+- **Admin token:** `SHARE_API_TOKEN` (compared in constant time) sees every link and can revoke any token with `DELETE /api/tokens/<id>`, which also deletes that token's files. A token can delete itself with `DELETE /api/tokens/me`. The MCP server refuses plain `http://` to a remote host.
 - **Served files are untrusted:** responses carry `Content-Security-Policy: sandbox` (plus `frame-ancestors 'none'`), `nosniff`, `no-referrer`, `noindex` and `no-store`, so an agent-written HTML page can't run scripts on your share domain. Use a dedicated domain that hosts nothing else.
 - **Akash caveats:** SDL env values are visible to the provider you lease from. A redeploy or a provider change can wipe the persistent volume, which kills live links early.
 
@@ -113,13 +114,7 @@ Easiest: paste this into your agent's chat and let it follow the guide the host 
 Set up share-me from https://shareme.lol/setup
 ```
 
-Or do it by hand. First log in once per machine. This prompts for the token, checks it against the host, and saves it to `~/.config/share-me/config.json` (mode 600):
-
-```bash
-npx -y share-me-mcp login https://shareme.lol
-```
-
-Then register the server:
+Or register it by hand. There is no signup form: on its first start the MCP server asks the host for its own access token (`POST /api/tokens`) and saves it to `~/.config/share-me/config.json` (mode 600). Each machine, or each agent with its own `HOME`, gets a separate token.
 
 ```bash
 claude mcp add share-me --scope user -- npx -y share-me-mcp
@@ -137,6 +132,18 @@ For Cursor (`~/.cursor/mcp.json`) or Claude Desktop (`claude_desktop_config.json
 
 Agents share files from `~/agent-output` by default (created automatically). Env vars still work and override the saved login.
 
+Other ways to get a token, in a terminal:
+
+```bash
+npx -y share-me-mcp signup https://shareme.lol
+```
+
+```bash
+npx -y share-me-mcp login https://shareme.lol
+```
+
+`signup` gets a fresh self-service token; `login` saves a token someone gave you (it prompts without echoing and checks it first).
+
 > The `npx` commands work once the `mcp/` package is published to npm as `share-me-mcp` (`npm publish -w mcp`). Until then, use `node /path/to/share-me/mcp/dist/index.js` in place of `npx -y share-me-mcp`.
 
 ## Configuration
@@ -151,6 +158,14 @@ Agents share files from `~/agent-output` by default (created automatically). Env
 | `MAX_TTL_SECONDS` | `604800` | Hard cap on any TTL |
 | `MAX_FILE_MB` | `100` | Upload size limit. Keep it under Cloudflare's 100 MB request limit (the SDL uses `95`) |
 | `MAX_TOTAL_MB` | `9216` | Storage quota across all live files. Keep it below the volume size |
+| `OPEN_SIGNUP` | off | `1` lets anyone get a self-service token at `POST /api/tokens` |
+| `TOKEN_QUOTA_MB` | `250` | Storage each self-service token may use at once |
+| `SIGNUPS_PER_IP_PER_HOUR` / `SIGNUPS_PER_DAY` | `5` / `500` | Signup throttle |
+| `TRUST_CF_CONNECTING_IP` | off | `1` takes the client IP from Cloudflare's `CF-Connecting-IP`; only when every request comes through Cloudflare |
+| `API_REQUESTS_PER_IP_PER_MINUTE` | `120` | Requests to `/api` per client IP; over it the host answers 429 with `Retry-After` |
+| `AUTH_FAILURES_PER_IP_PER_HOUR` | `30` | Wrong tokens per client IP before that IP is locked out of `/api` for the rest of the hour |
+| `UPLOADS_PER_TOKEN_PER_HOUR` | `60` | Uploads per self-service token (the admin token is exempt) |
+| `DOWNLOADS_PER_IP_PER_MINUTE` | `300` | Link downloads per client IP |
 | `ALLOWED_EXTENSIONS` | all known types | Comma- or space-separated subset, e.g. `pdf,png,md`. Known types: `pdf html htm md txt log csv json xml docx xlsx pptx zip png jpg jpeg gif webp svg mp4 webm mp3 wav`. To add a type, add it to [`host/src/fileTypes.ts`](host/src/fileTypes.ts) with its content type and signature |
 | `SWEEP_INTERVAL_SECONDS` | `60` | How often expired files are deleted |
 | `DATA_DIR` / `PORT` | `/data` / `8080` | |
@@ -160,7 +175,7 @@ Agents share files from `~/agent-output` by default (created automatically). Env
 | Var | Default | |
 |---|---|---|
 | `SHARE_HOST_URL` | from `login` | https, unless it's localhost |
-| `SHARE_API_TOKEN` | from `login` | Same as the host |
+| `SHARE_API_TOKEN` | from `signup`/`login` | A self-service token or the host's admin token |
 | `SHARE_ALLOWED_DIRS` | `~/agent-output` | Absolute dirs, separated by `:` (`;` on Windows) |
 | `SHARE_DEFAULT_TTL_HOURS` | `24` | |
 | `SHARE_MAX_FILE_MB` | `100` | Checked locally before uploading |

@@ -1,16 +1,15 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pipeline } from "node:stream";
+import { createApi, isApiPath, type Accounts } from "./api.js";
 import type { HostConfig } from "./config.js";
-import { checkContent, contentTypeOf, extensionOf, HEAD_BYTES } from "./fileTypes.js";
+import { clientIp, HttpError, sendJson, tooManyRequests } from "./http.js";
 import { FALLBACK_LANDING, type LegalPages } from "./landing.js";
+import { createLimits } from "./limits.js";
 import { renderSetupGuide } from "./setupGuide.js";
-import { peek } from "./peek.js";
-import { FileTooLargeError, type FileMeta, type FileStore } from "./store.js";
+import { FileTooLargeError, type FileStore } from "./store.js";
 
 type Clock = () => number;
 
-const MAX_FILENAME_LENGTH = 255;
 const MINUTE_MS = 60_000;
 // Large uploads on slow links need far more than Node's 5-minute default.
 const REQUEST_TIMEOUT_MS = 30 * MINUTE_MS;
@@ -27,56 +26,8 @@ const DOWNLOAD_HEADERS = {
   "cache-control": "private, no-store",
 } as const;
 
-class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-  }
-}
-
-const sha256 = (value: string) => createHash("sha256").update(value).digest();
-
-function isAuthorized(req: IncomingMessage, token: string): boolean {
-  const header = req.headers.authorization ?? "";
-  const match = /^Bearer (.+)$/.exec(header);
-  return match !== null && timingSafeEqual(sha256(match[1]), sha256(token));
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
-}
-
 function encodeRfc5987(value: string): string {
   return encodeURIComponent(value).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-
-function parseFilename(req: IncomingMessage): string {
-  const raw = req.headers["x-filename"];
-  let name = "";
-  try {
-    name = typeof raw === "string" ? decodeURIComponent(raw).trim() : "";
-  } catch {
-    throw new HttpError(400, "x-filename must be URI-encoded");
-  }
-  if (!name || name.length > MAX_FILENAME_LENGTH || /[/\\\u0000-\u001f]/.test(name)) {
-    throw new HttpError(400, "x-filename header must be a plain file name");
-  }
-  return name;
-}
-
-function parseTtl(req: IncomingMessage, config: HostConfig): number {
-  const raw = req.headers["x-ttl-seconds"];
-  if (raw === undefined || raw === "") return config.defaultTtlSeconds;
-  const ttl = Number(raw);
-  if (!Number.isInteger(ttl) || ttl <= 0) throw new HttpError(400, "x-ttl-seconds must be a positive integer");
-  return Math.min(ttl, config.maxTtlSeconds);
-}
-
-/** The extension decides how the file is served; the uploader's Content-Type is ignored. */
-function requireAllowedExtension(filename: string, allowed: readonly string[]): string {
-  const ext = extensionOf(filename);
-  if (ext && allowed.includes(ext)) return ext;
-  const list = allowed.map((e) => `.${e}`).join(", ");
-  throw new HttpError(415, `File type ${ext ? `.${ext}` : "(no extension)"} is not allowed. Allowed: ${list}`);
 }
 
 // File ids are bearer secrets: never write them to logs.
@@ -99,16 +50,6 @@ const FONT_HEADERS = {
   "cache-control": "public, max-age=31536000, immutable",
 } as const;
 
-function toPublic(meta: FileMeta, baseUrl: string) {
-  return {
-    id: meta.id,
-    url: `${baseUrl}/f/${meta.id}/${encodeURIComponent(meta.filename)}`,
-    filename: meta.filename,
-    size: meta.size,
-    expiresAt: new Date(meta.expiresAt).toISOString(),
-  };
-}
-
 /** First-party pages: the landing page at /, the agent setup guide at /setup, and the legal pages. */
 export interface Pages {
   readonly landing: string;
@@ -130,33 +71,14 @@ export function createServer(
   store: FileStore,
   now: Clock = Date.now,
   pages: Pages = { landing: FALLBACK_LANDING, setup: renderSetupGuide(config.publicBaseUrl) },
+  accounts?: Accounts,
 ): Server {
-  async function upload(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const declared = Number(req.headers["content-length"] ?? 0);
-    if (declared > config.maxFileBytes) throw new HttpError(413, "File too large");
-    const remainingQuota = config.maxTotalBytes - store.totalBytes();
-    if (declared > remainingQuota || remainingQuota <= 0) throw new HttpError(507, "Share host storage is full; try again later");
-    const filename = parseFilename(req);
-    const ext = requireAllowedExtension(filename, config.allowedExtensions);
-    const ttlSeconds = parseTtl(req, config);
-    const { head, body, discard } = await peek(req, HEAD_BYTES);
-    const mismatch = checkContent(ext, head);
-    if (mismatch) {
-      discard();
-      throw new HttpError(415, mismatch);
-    }
-    const meta = await store.create({
-      filename,
-      contentType: contentTypeOf(ext),
-      ttlSeconds,
-      maxBytes: Math.min(config.maxFileBytes, remainingQuota),
-      body,
-      clock: now,
-    });
-    sendJson(res, 201, toPublic(meta, config.publicBaseUrl));
-  }
+  const limits = createLimits(config);
+  const handleApi = createApi(config, store, now, limits, accounts);
 
-  function download(id: string, method: string, res: ServerResponse): void {
+  function download(req: IncomingMessage, id: string, method: string, res: ServerResponse): void {
+    const wait = limits.downloads.take(clientIp(req, config.trustCfConnectingIp), now());
+    if (wait > 0) throw tooManyRequests("Too many downloads from your network; try again shortly", wait);
     const meta = store.get(id, now());
     if (!meta) throw new HttpError(404, "Link not found or expired");
     res.writeHead(200, {
@@ -201,25 +123,9 @@ export function createServer(
     }
 
     const fileMatch = /^\/f\/([^/]+)(?:\/[^/]*)?$/.exec(pathname);
-    if ((method === "GET" || method === "HEAD") && fileMatch) return download(fileMatch[1], method, res);
+    if ((method === "GET" || method === "HEAD") && fileMatch) return download(req, fileMatch[1], method, res);
 
-    if (pathname === "/api/config" || pathname === "/api/files" || pathname.startsWith("/api/files/")) {
-      if (!isAuthorized(req, config.apiToken)) throw new HttpError(401, "Unauthorized");
-      if (method === "POST" && pathname === "/api/files") return upload(req, res);
-      if (method === "GET" && pathname === "/api/config") {
-        const { allowedExtensions, maxFileBytes, maxTtlSeconds } = config;
-        return sendJson(res, 200, { allowedExtensions, maxFileBytes, maxTtlSeconds });
-      }
-      if (method === "GET" && pathname === "/api/files") {
-        return sendJson(res, 200, { files: store.list(now()).map((m) => toPublic(m, config.publicBaseUrl)) });
-      }
-      const idMatch = /^\/api\/files\/([^/]+)$/.exec(pathname);
-      if (method === "DELETE" && idMatch) {
-        if (!(await store.delete(idMatch[1]))) throw new HttpError(404, "Link not found");
-        res.writeHead(204).end();
-        return;
-      }
-    }
+    if (isApiPath(pathname)) return handleApi(req, res, pathname, method);
     throw new HttpError(404, "Not found");
   }
 
@@ -233,7 +139,8 @@ export function createServer(
       const declared = Number(req.headers["content-length"] ?? 0);
       if (declared > config.maxFileBytes) res.setHeader("connection", "close");
       else if (!req.readableEnded && !req.destroyed) req.resume();
-      sendJson(res, status, { error: status === 500 ? "Internal server error" : (err as Error).message });
+      const headers = err instanceof HttpError ? err.headers : {};
+      sendJson(res, status, { error: status === 500 ? "Internal server error" : (err as Error).message }, headers);
     });
   });
   server.requestTimeout = REQUEST_TIMEOUT_MS;

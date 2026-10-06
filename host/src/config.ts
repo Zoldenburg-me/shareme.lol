@@ -14,6 +14,22 @@ export interface HostConfig {
   readonly sweepIntervalMs: number;
   /** Lower-case extensions without dots, sorted. */
   readonly allowedExtensions: readonly string[];
+  /** Anyone may POST /api/tokens for their own token. Off unless OPEN_SIGNUP=1. */
+  readonly openSignup: boolean;
+  /** Storage each self-service token may use at once. */
+  readonly tokenQuotaBytes: number;
+  readonly signupsPerIpPerHour: number;
+  readonly signupsPerDay: number;
+  /** Take the client IP from CF-Connecting-IP; only safe when every request arrives via Cloudflare. */
+  readonly trustCfConnectingIp: boolean;
+  /** Requests per client IP per minute to /api (signup has its own, stricter limit). */
+  readonly apiRequestsPerIpPerMinute: number;
+  /** Requests with a wrong token per client IP per hour, before the IP is locked out of /api. */
+  readonly authFailuresPerIpPerHour: number;
+  /** Uploads per self-service token per hour; the admin token is exempt. */
+  readonly uploadsPerTokenPerHour: number;
+  /** Downloads per client IP per minute. */
+  readonly downloadsPerIpPerMinute: number;
 }
 
 const MIN_TOKEN_LENGTH = 32;
@@ -74,5 +90,14 @@ export function loadConfig(env: Env): HostConfig {
     maxTotalBytes: positiveInt(env, "MAX_TOTAL_MB", 9 * 1024) * MEBIBYTE,
     sweepIntervalMs: positiveInt(env, "SWEEP_INTERVAL_SECONDS", 60) * 1000,
     allowedExtensions: parseAllowedExtensions(env.ALLOWED_EXTENSIONS),
+    openSignup: env.OPEN_SIGNUP === "1",
+    tokenQuotaBytes: positiveInt(env, "TOKEN_QUOTA_MB", 250) * MEBIBYTE,
+    signupsPerIpPerHour: positiveInt(env, "SIGNUPS_PER_IP_PER_HOUR", 5),
+    signupsPerDay: positiveInt(env, "SIGNUPS_PER_DAY", 500),
+    trustCfConnectingIp: env.TRUST_CF_CONNECTING_IP === "1",
+    apiRequestsPerIpPerMinute: positiveInt(env, "API_REQUESTS_PER_IP_PER_MINUTE", 120),
+    authFailuresPerIpPerHour: positiveInt(env, "AUTH_FAILURES_PER_IP_PER_HOUR", 30),
+    uploadsPerTokenPerHour: positiveInt(env, "UPLOADS_PER_TOKEN_PER_HOUR", 60),
+    downloadsPerIpPerMinute: positiveInt(env, "DOWNLOADS_PER_IP_PER_MINUTE", 300),
   };
 }

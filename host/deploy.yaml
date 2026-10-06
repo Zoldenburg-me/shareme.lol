@@ -20,6 +20,11 @@ services:
       - MAX_TTL_SECONDS=604800
       - MAX_FILE_MB=95              # Cloudflare's free plan caps request bodies at 100 MB
       - MAX_TOTAL_MB=9216           # keep below the 10Gi data volume
+      - OPEN_SIGNUP=1               # anyone can POST /api/tokens for their own token
+      - TOKEN_QUOTA_MB=250          # storage per self-service token
+      - SIGNUPS_PER_IP_PER_HOUR=5
+      - SIGNUPS_PER_DAY=500
+      - TRUST_CF_CONNECTING_IP=1    # safe: the host is only reachable through the Cloudflare Tunnel
       # Optional: narrow the shareable file types (default: every type the host knows)
       # - ALLOWED_EXTENSIONS=pdf,png,jpg,md,html,csv
     expose:
