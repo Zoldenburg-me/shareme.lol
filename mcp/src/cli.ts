@@ -1,9 +1,9 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { HostClient } from "./client.js";
-import { loadMcpConfig, normalizeHostUrl } from "./config.js";
-import { readStoredLogin, saveLogin, storedLoginPath } from "./login.js";
+import { HostClient, signup as requestToken } from "./client.js";
+import { DEFAULT_HOST, loadMcpConfig, normalizeHostUrl } from "./config.js";
+import { ensureLogin, readStoredLogin, saveLogin, storedLoginPath } from "./login.js";
 import { buildServer } from "./server.js";
 
 const REGISTER_HINT = "claude mcp add share-me --scope user -- npx -y share-me-mcp";
@@ -60,8 +60,22 @@ export async function login(hostArg: string | undefined): Promise<void> {
   );
 }
 
+/** Get a new self-service token for this machine, replacing any saved login. */
+export async function signup(hostArg: string | undefined): Promise<void> {
+  const host = normalizeHostUrl(hostArg ?? DEFAULT_HOST, process.env.SHARE_ALLOW_INSECURE_HTTP === "1");
+  const { token, id, quotaBytes } = await requestToken(host);
+  const path = storedLoginPath(homedir());
+  await saveLogin({ host, token }, path, (l) => new HostClient(l.host, l.token).getConfig());
+  const quota = quotaBytes ? ` with ${Math.round(quotaBytes / (1024 * 1024))} MB of storage` : "";
+  process.stderr.write(`Signed up at ${host} as ${id}${quota}. Token saved to ${path}.\n\nNext, register the MCP server, for example:\n  ${REGISTER_HINT}\n`);
+}
+
 export async function serve(): Promise<void> {
-  const config = loadMcpConfig(process.env, readStoredLogin(storedLoginPath(homedir())));
+  const path = storedLoginPath(homedir());
+  const hadLogin = readStoredLogin(path) !== undefined;
+  const login = await ensureLogin(process.env, path, requestToken);
+  if (login && !hadLogin) process.stderr.write(`[share-me-mcp] signed up at ${login.host}; token saved to ${path}\n`);
+  const config = loadMcpConfig(process.env, login);
   await Promise.all(config.allowedDirs.map((dir) => mkdir(dir, { recursive: true, mode: 0o700 })));
   await buildServer(config).connect(new StdioServerTransport());
 }

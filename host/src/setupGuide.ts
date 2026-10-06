@@ -7,12 +7,7 @@ Files are hosted at ${baseUrl} and deleted automatically when their link expires
 
 ## Steps for the agent
 
-1. Ask your human to run this in their own terminal. It prompts for the share-me token for this host
-   and checks it. Do not ask them to paste the token into this chat.
-
-       npx -y share-me-mcp login ${baseUrl}
-
-2. Register the MCP server in the client you are running in:
+1. Register the MCP server in the client you are running in:
 
    - Claude Code: \`claude mcp add share-me --scope user -- npx -y share-me-mcp\`
    - Codex CLI: \`codex mcp add share-me -- npx -y share-me-mcp\`
@@ -22,16 +17,25 @@ Files are hosted at ${baseUrl} and deleted automatically when their link expires
      { "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp"] } } }
      \`\`\`
 
-3. Reload MCP servers and call \`list_links\` to confirm the connection.
+   On its first start the server signs up at ${baseUrl} and saves its own access token for this
+   machine to \`~/.config/share-me/config.json\`. Nothing else to configure.
 
-4. Save files you want to share in \`~/agent-output\` (created automatically), then call \`share_file\`
+2. Reload MCP servers and call \`list_links\` to confirm the connection.
+
+3. Save files you want to share in \`~/agent-output\` (created automatically), then call \`share_file\`
    with the absolute path. Give your human the link and tell them when it expires.
+
+Optional, in a terminal: \`npx -y share-me-mcp signup ${baseUrl}\` gets a fresh token up front, and
+\`npx -y share-me-mcp login ${baseUrl}\` uses a token the host operator gave you.
+Never paste a token into this chat.
 
 ## Tools
 
 - \`share_file(path, ttl_hours?, filename?)\`: upload a file and get an expiring link.
-- \`list_links()\`: see active links and when they expire.
+- \`list_links()\`: see your active links and when they expire.
 - \`revoke_link(id)\`: end a link early; the file is deleted.
+
+Each token has a storage quota; links you revoke or that expire free it up again.
 
 ## Good practice
 

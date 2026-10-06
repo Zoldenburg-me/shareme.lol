@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readStoredLogin, saveLogin, storedLoginPath } from "../src/login.js";
+import { ensureLogin, readStoredLogin, saveLogin, storedLoginPath } from "../src/login.js";
 
 const POLICY = { allowedExtensions: ["md"], maxFileBytes: 10, maxTtlSeconds: 60 };
 
@@ -59,5 +59,33 @@ describe("stored login", () => {
     expect(() => readStoredLogin(path)).toThrow(/log in again/);
     await writeFile(path, JSON.stringify({ host: "https://a.b" }));
     expect(() => readStoredLogin(path)).toThrow(/log in again/);
+  });
+
+  it("signs up at shareme.lol on first run and saves the new token privately", async () => {
+    const signup = vi.fn().mockResolvedValue({ token: "sm_new", id: "tok_1" });
+    const login = await ensureLogin({}, path, signup);
+    expect(signup).toHaveBeenCalledWith("https://shareme.lol");
+    expect(login).toEqual({ host: "https://shareme.lol", token: "sm_new" });
+    expect(readStoredLogin(path)).toEqual(login);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+  });
+
+  it("signs up at SHARE_HOST_URL when set", async () => {
+    const signup = vi.fn().mockResolvedValue({ token: "sm_x", id: "tok_2" });
+    await ensureLogin({ SHARE_HOST_URL: "http://localhost:8787" }, path, signup);
+    expect(signup).toHaveBeenCalledWith("http://localhost:8787");
+  });
+
+  it("reuses a saved login and never signs up twice", async () => {
+    const signup = vi.fn();
+    await saveLogin({ host: "https://a.b", token: "t" }, path, vi.fn().mockResolvedValue(POLICY));
+    expect(await ensureLogin({}, path, signup)).toEqual({ host: "https://a.b", token: "t" });
+    expect(signup).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the token comes from the environment", async () => {
+    const signup = vi.fn();
+    expect(await ensureLogin({ SHARE_API_TOKEN: "env-token" }, path, signup)).toBeUndefined();
+    expect(signup).not.toHaveBeenCalled();
   });
 });

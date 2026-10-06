@@ -106,6 +106,25 @@ describe("FileStore", () => {
     expect(reopened.list(NOW)).toEqual([]);
   });
 
+  it("records the owner and scopes listing, usage and bulk deletion to it", async () => {
+    const mk = (owner: string | undefined, body: string) =>
+      store.create({ filename: "a.txt", contentType: "text/plain", ttlSeconds: 60, maxBytes: 1024, body: Readable.from([body]), clock: () => NOW, owner });
+    const a1 = await mk("tok_a", "12345");
+    await mk("tok_a", "123");
+    const b1 = await mk("tok_b", "1");
+    const admin = await mk(undefined, "12");
+
+    expect(a1.owner).toBe("tok_a");
+    expect(admin.owner).toBeUndefined();
+    expect(store.usedBytes("tok_a")).toBe(8);
+    expect(store.list(NOW, "tok_b").map((m) => m.id)).toEqual([b1.id]);
+    expect(store.list(NOW)).toHaveLength(4);
+
+    expect(await store.deleteByOwner("tok_a")).toBe(2);
+    expect(store.usedBytes("tok_a")).toBe(0);
+    expect(store.list(NOW)).toHaveLength(2);
+  });
+
   it("opens a readable stream of the stored bytes", async () => {
     const meta = await put("stream me");
     const chunks: Buffer[] = [];

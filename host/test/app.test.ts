@@ -32,6 +32,15 @@ describe("host HTTP API", () => {
       maxTotalBytes: 100,
       sweepIntervalMs: 60_000,
       allowedExtensions: ["md", "png", "txt"],
+      openSignup: false,
+      tokenQuotaBytes: 1024 * 1024,
+      signupsPerIpPerHour: 5,
+      signupsPerDay: 500,
+      trustCfConnectingIp: false,
+      apiRequestsPerIpPerMinute: 120,
+      authFailuresPerIpPerHour: 30,
+      uploadsPerTokenPerHour: 60,
+      downloadsPerIpPerMinute: 300,
     };
     server = createServer(config, await FileStore.open(dir), () => clock, {
       landing: "<!doctype html><title>landing</title>",

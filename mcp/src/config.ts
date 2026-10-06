@@ -17,6 +17,9 @@ export interface StoredLogin {
 
 type Env = Record<string, string | undefined>;
 
+/** The public share-me host; used when nothing else is configured. */
+export const DEFAULT_HOST = "https://shareme.lol";
+
 const MEBIBYTE = 1024 * 1024;
 const DEFAULT_OUTBOX = "agent-output";
 const LOGIN_HINT = "Run `npx -y share-me-mcp login https://your-share-host` in a terminal";

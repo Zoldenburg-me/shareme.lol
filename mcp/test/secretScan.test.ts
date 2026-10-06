@@ -41,6 +41,7 @@ describe("findSecret", () => {
     [concat("sk-", "proj-", "c".repeat(48)), "OpenAI API key"],
     [concat("xo", "xb-", "1234567890-abcdefghij"), "Slack token"],
     [concat("AI", "za", "d".repeat(35)), "Google API key"],
+    [`SHARE_TOKEN=${concat("sm", "_", "e".repeat(43))}`, "share-me token"],
   ])("detects %s", async (content, kind) => {
     expect(await scan(`some report text\n${content}\nmore`)).toBe(kind);
   });

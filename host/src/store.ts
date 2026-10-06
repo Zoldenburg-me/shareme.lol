@@ -12,6 +12,8 @@ export interface FileMeta {
   readonly size: number;
   readonly createdAt: number;
   readonly expiresAt: number;
+  /** Token id of the uploader; absent for files uploaded with the admin token. */
+  readonly owner?: string;
 }
 
 export interface CreateInput {
@@ -21,6 +23,7 @@ export interface CreateInput {
   readonly maxBytes: number;
   readonly body: Readable;
   readonly clock: () => number;
+  readonly owner?: string;
 }
 
 export class FileTooLargeError extends Error {
@@ -84,6 +87,7 @@ export class FileStore {
         size: limiter.bytes(),
         createdAt: finishedAt,
         expiresAt: finishedAt + input.ttlSeconds * 1000,
+        ...(input.owner ? { owner: input.owner } : {}),
       };
       await writeFile(join(dir, `${META}.tmp`), JSON.stringify(meta));
       await rename(join(dir, `${META}.tmp`), join(dir, META));
@@ -101,8 +105,13 @@ export class FileStore {
     return meta && meta.expiresAt > now ? meta : undefined;
   }
 
-  list(now: number): readonly FileMeta[] {
-    return [...this.index.values()].filter((m) => m.expiresAt > now);
+  /** Live files; only those of `owner` when one is given. */
+  list(now: number, owner?: string): readonly FileMeta[] {
+    return [...this.index.values()].filter((m) => m.expiresAt > now && (owner === undefined || m.owner === owner));
+  }
+
+  usedBytes(owner: string): number {
+    return [...this.index.values()].filter((m) => m.owner === owner).reduce((sum, m) => sum + m.size, 0);
   }
 
   totalBytes(): number {
@@ -119,6 +128,13 @@ export class FileStore {
     this.index = new Map([...this.index].filter(([key]) => key !== id));
     await rm(join(this.filesDir, id), { recursive: true, force: true });
     return true;
+  }
+
+  /** Delete every file uploaded with one token (used when that token is revoked). */
+  async deleteByOwner(owner: string): Promise<number> {
+    const ids = [...this.index.values()].filter((m) => m.owner === owner).map((m) => m.id);
+    for (const id of ids) await this.delete(id);
+    return ids.length;
   }
 
   async sweep(now: number): Promise<string[]> {
