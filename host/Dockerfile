@@ -25,7 +25,7 @@ WORKDIR /app
 COPY host/package.json ./package.json
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/host/dist ./dist
-COPY site/index.html site/imprint.html site/privacy.html site/terms.html ./site/
+COPY site/index.html site/imprint.html site/privacy.html ./site/
 COPY site/fonts ./site/fonts
 RUN mkdir -p /data && chown node:node /data
 EXPOSE 8080
