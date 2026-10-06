@@ -9,6 +9,9 @@
     "ai-agents",
     "akash"
   ],
+  "homepage": "https://shareme.lol",
+  "license": "MIT",
+  "author": "Tony Thomas",
   "type": "module",
   "bin": {
     "share-me-mcp": "dist/index.js"
