@@ -9,19 +9,19 @@ Files are hosted at [shareme.lol](https://shareme.lol) by default, or on [your o
 Claude Code:
 
 ```bash
-claude mcp add share-me --scope user -- npx -y share-me-mcp
+claude mcp add share-me --scope user -- npx -y share-me-mcp@0.1.0
 ```
 
 Codex CLI:
 
 ```bash
-codex mcp add share-me -- npx -y share-me-mcp
+codex mcp add share-me -- npx -y share-me-mcp@0.1.0
 ```
 
 Cursor (`~/.cursor/mcp.json`) or Claude Desktop (`claude_desktop_config.json`):
 
 ```json
-{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp"] } } }
+{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp@0.1.0"] } } }
 ```
 
 That's it. On first start the server gets its own access token from the host and saves it to `~/.config/share-me/config.json` (readable only by you). Put files in `~/agent-output` and ask your agent to share them:
@@ -56,13 +56,13 @@ These checks prevent mistakes and careless prompt injection. They are not a sand
 ## Commands
 
 ```bash
-npx -y share-me-mcp signup [host]
+npx -y share-me-mcp@0.1.0 signup [host]
 ```
 
 Gets a fresh token (default host `https://shareme.lol`).
 
 ```bash
-npx -y share-me-mcp login <host>
+npx -y share-me-mcp@0.1.0 login <host>
 ```
 
 Saves a token someone gave you. It prompts without echoing and checks the token first.

@@ -45,7 +45,7 @@ describe("host HTTP API", () => {
     server = createServer(config, await FileStore.open(dir), () => clock, {
       landing: "<!doctype html><title>landing</title>",
       setup: "# share-me setup",
-      legal: { imprint: "<title>imprint</title>", privacy: "<title>privacy</title>" },
+      legal: { imprint: "<title>imprint</title>", privacy: "<title>privacy</title>", terms: "<title>terms</title>" },
       fonts: new Map([["dm-sans.woff2", Buffer.from("wOF2font")]]),
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -85,8 +85,8 @@ describe("host HTTP API", () => {
     }
   });
 
-  it("serves the imprint and privacy policy in English and German paths", async () => {
-    const expected = { "/imprint": "imprint", "/impressum": "imprint", "/privacy": "privacy", "/datenschutz": "privacy" };
+  it("serves the imprint, privacy policy and terms in English and German paths", async () => {
+    const expected = { "/imprint": "imprint", "/impressum": "imprint", "/privacy": "privacy", "/datenschutz": "privacy", "/terms": "terms", "/nutzungsbedingungen": "terms" };
     for (const [path, title] of Object.entries(expected)) {
       const res = await fetch(`${base}${path}`);
       expect(res.status).toBe(200);

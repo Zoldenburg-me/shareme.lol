@@ -94,6 +94,9 @@
   .first-time { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; font: 400 12px/16px var(--mono); color: var(--ink-soft); }
   .first-time code { color: var(--ink); background: var(--surface-3); border: 1px solid var(--line-card); border-radius: var(--radius-tag); padding: 6px 10px; overflow-wrap: anywhere; }
 
+  .alt { font: 400 13px/1.5 var(--sans); color: var(--ink-soft); }
+  .alt a, .note a, .way a { color: var(--accent); }
+
   /* Below the fold */
   section { padding-block: var(--section); }
   .pill { display: inline-block; font: 400 12.8px/16.64px var(--mono); color: var(--ink-muted); background: var(--bg-pill); border: 1px solid var(--line-pill); border-radius: var(--radius-pill); padding: 7px 14px; }
@@ -109,11 +112,20 @@
   .guards { display: flex; flex-wrap: wrap; gap: var(--gap-dense); margin-top: 28px; }
   .guards span { font: 400 12.8px/16.64px var(--mono); color: var(--ink-soft); background: var(--bg-pill); border: 1px solid var(--line-pill); border-radius: var(--radius-pill); padding: 8px 14px; }
 
+  .head .note { max-width: 62ch; color: var(--ink-soft); }
+  .ways { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap-dense); }
+  .way { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 14px; min-width: 0; padding: 28px; border-radius: var(--radius-cover); background: var(--surface-2); }
+  .way h3 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font: 400 24px/1.2 var(--sans); color: var(--ink); }
+  .way h3 span { font: 400 12.8px/1 var(--mono); color: var(--accent); }
+  .way p { color: var(--ink-soft); }
+  .way .small { font-size: 13px; }
+  .way .cmd { box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+
   footer { background: var(--bg-deep); border-top: 1px solid var(--line-card); }
   footer .wrap { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding-block: 32px; }
   footer p { font: 400 12px/16px var(--mono); color: var(--ink-soft); }
 
-  @media (max-width: 900px) { .tools { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) { .tools, .ways { grid-template-columns: 1fr; } }
   @media (max-width: 640px) {
     .wrap { padding-inline: var(--gutter-phone); }
     section { padding-block: 72px; }
@@ -137,6 +149,7 @@
       <a class="wordmark" href="#top">share-me<i aria-hidden="true"></i></a>
       <div class="nav-links">
         <a href="https://shareme.lol/setup">Setup guide</a>
+        <a href="#run">Self-host</a>
         <a class="btn-accent" href="#install">Install</a>
       </div>
     </nav>
@@ -146,7 +159,7 @@
         <span class="display reveal">Hand your human a link</span>
         <span class="emphasis reveal">not an attachment</span>
       </h1>
-      <p class="lede">Your agent turns any file it makes into a link that deletes itself.</p>
+      <p class="lede">Your agent turns any file it makes into a link that expires. Nothing lingers on a server, and you can revoke it any time.</p>
 
       <div class="install" id="install">
         <div class="seg" role="tablist" aria-label="Choose your agent">
@@ -163,26 +176,27 @@
         </div>
 
         <div class="cmd-panel" role="tabpanel" id="p-claude" aria-labelledby="tab-claude" hidden>
-          <div class="cmd"><code><span class="p">&gt;</span>claude mcp add share-me --scope user -- npx -y share-me-mcp</code><button class="copy-btn" type="button" aria-label="Copy the Claude Code command"></button></div>
+          <div class="cmd"><code><span class="p">&gt;</span>claude mcp add share-me --scope user -- npx -y share-me-mcp@0.1.0</code><button class="copy-btn" type="button" aria-label="Copy the Claude Code command"></button></div>
           <p class="hint"><span class="arrow" aria-hidden="true">↑</span>run this in your terminal</p>
         </div>
 
         <div class="cmd-panel" role="tabpanel" id="p-codex" aria-labelledby="tab-codex" hidden>
-          <div class="cmd"><code><span class="p">&gt;</span>codex mcp add share-me -- npx -y share-me-mcp</code><button class="copy-btn" type="button" aria-label="Copy the Codex command"></button></div>
+          <div class="cmd"><code><span class="p">&gt;</span>codex mcp add share-me -- npx -y share-me-mcp@0.1.0</code><button class="copy-btn" type="button" aria-label="Copy the Codex command"></button></div>
           <p class="hint"><span class="arrow" aria-hidden="true">↑</span>run this in your terminal</p>
         </div>
 
         <div class="cmd-panel" role="tabpanel" id="p-cursor" aria-labelledby="tab-cursor" hidden>
-          <div class="cmd"><code>{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp"] } } }</code><button class="copy-btn" type="button" aria-label="Copy the Cursor config"></button></div>
+          <div class="cmd"><code>{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp@0.1.0"] } } }</code><button class="copy-btn" type="button" aria-label="Copy the Cursor config"></button></div>
           <p class="hint"><span class="arrow" aria-hidden="true">↑</span>add to ~/.cursor/mcp.json</p>
         </div>
 
         <div class="cmd-panel" role="tabpanel" id="p-desktop" aria-labelledby="tab-desktop" hidden>
-          <div class="cmd"><code>{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp"] } } }</code><button class="copy-btn" type="button" aria-label="Copy the Claude Desktop config"></button></div>
+          <div class="cmd"><code>{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp@0.1.0"] } } }</code><button class="copy-btn" type="button" aria-label="Copy the Claude Desktop config"></button></div>
           <p class="hint"><span class="arrow" aria-hidden="true">↑</span>add to claude_desktop_config.json, then restart</p>
         </div>
 
-        <p class="first-time" id="first-time" hidden>No signup form: your agent gets its own access token on first run.</p>
+        <p class="first-time" id="first-time" hidden>No signup form: on first run your agent gets its own token for shareme.lol.</p>
+        <p class="alt">Hosted at shareme.lol. Rather keep files on your own server? <a href="#run">Self-host it</a></p>
       </div>
     </div>
   </div>
@@ -192,7 +206,8 @@
   <section aria-labelledby="how-title">
     <div class="head">
       <span class="pill">How it works</span>
-      <h2 id="how-title"><span class="q">Attachments get forwarded and forgotten.</span> <em>These links delete themselves.</em></h2>
+      <h2 id="how-title"><span class="q">An attachment sits in every inbox it reaches.</span> <em>A link expires, and you can revoke it.</em></h2>
+      <p class="note">Expiry deletes the file from the server, not copies people already saved. What you get: nothing left lying around in storage, a revoke button, no attachment size limits, and no bucket, Drive folder or account to set up, in every agent client.</p>
     </div>
     <div class="explainer">
       <canvas id="explainer" width="1600" height="900" role="img" aria-label="Animation: an agent shares report.html and gets a link valid for 24 hours; a .env file is refused; when the lifetime ends the file is deleted and the link returns 404."></canvas>
@@ -207,7 +222,28 @@
       <span>Secret scan before upload</span>
       <span>File type checked on the host</span>
       <span>Links expire, 24 h by default</span>
-      <span>Your own host on Akash</span>
+      <span>Hosted or self-hosted</span>
+    </div>
+  </section>
+
+  <section id="run" aria-labelledby="run-title">
+    <div class="head">
+      <span class="pill">Two ways to run it</span>
+      <h2 id="run-title"><span class="q">Try it on ours.</span> <em>Or keep it on yours.</em></h2>
+    </div>
+    <div class="ways">
+      <article class="way">
+        <h3>Hosted <span>shareme.lol</span></h3>
+        <p>Install the MCP server above and you're done. On first run your agent gets its own token with 250&nbsp;MB of storage. Links last 24&nbsp;hours by default, 7&nbsp;days at most.</p>
+        <div class="cmd"><code><span class="p">&gt;</span>npx -y share-me-mcp@0.1.0 signup</code><button class="copy-btn" type="button" aria-label="Copy the signup command"></button></div>
+        <p class="small">Optional: get a token up front in your own terminal. Uploads must follow the <a href="/terms">terms</a>. Report abuse to <a href="mailto:support@zoldhq.com?subject=Abuse%20report">support@zoldhq.com</a> (<a href="/terms#report">how</a>).</p>
+      </article>
+      <article class="way">
+        <h3>Self-host <span>your server</span></h3>
+        <p>Run the file host on Akash Network or any Docker host, then point share-me at it. Your files never touch shareme.lol.</p>
+        <div class="cmd"><code><span class="p">&gt;</span>npx -y share-me-mcp@0.1.0 signup https://your-host</code><button class="copy-btn" type="button" aria-label="Copy the self-host signup command"></button></div>
+        <p class="small">Then register the MCP server as above; it uses the host you signed up at. <a href="https://github.com/Zoldenburg-me/shareme.lol#setup">Deploy guide on GitHub</a></p>
+      </article>
     </div>
   </section>
 </main>
@@ -215,7 +251,7 @@
 <footer>
   <div class="wrap">
     <a class="wordmark" href="#top">share-me<i aria-hidden="true"></i></a>
-    <p>Self-host the file host on Akash Network · <a href="https://shareme.lol/setup">Setup guide</a> · <a href="/imprint">Imprint</a> · <a href="/privacy">Privacy</a></p>
+    <p><a href="#run">Hosted or self-hosted</a> · <a href="https://shareme.lol/setup">Setup guide</a> · <a href="/terms">Terms</a> · <a href="/imprint">Imprint</a> · <a href="/privacy">Privacy</a></p>
   </div>
 </footer>
 

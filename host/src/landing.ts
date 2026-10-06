@@ -34,19 +34,20 @@ export async function loadLandingPage(path: string, baseUrl: string): Promise<st
   }
 }
 
-/** The imprint and privacy policy name the operator of shareme.lol; a self-hosted copy publishes its own. */
+/** The imprint, privacy policy and terms name the operator of shareme.lol; a self-hosted copy publishes its own. */
 const LEGAL_HOST = "shareme.lol";
 
 export interface LegalPages {
   readonly imprint: string;
   readonly privacy: string;
+  readonly terms: string;
 }
 
 /** Legal pages are required on shareme.lol, so a missing file there fails startup. */
 export async function loadLegalPages(siteDir: string, baseUrl: string): Promise<LegalPages | undefined> {
   if (new URL(baseUrl).host !== LEGAL_HOST) return undefined;
-  const [imprint, privacy] = await Promise.all(
-    ["imprint.html", "privacy.html"].map((name) => readFile(join(siteDir, name), "utf8")),
+  const [imprint, privacy, terms] = await Promise.all(
+    ["imprint.html", "privacy.html", "terms.html"].map((name) => readFile(join(siteDir, name), "utf8")),
   );
-  return { imprint: wrapPage(imprint), privacy: wrapPage(privacy) };
+  return { imprint: wrapPage(imprint), privacy: wrapPage(privacy), terms: wrapPage(terms) };
 }

@@ -117,17 +117,17 @@ Set up share-me from https://shareme.lol/setup
 Or register it by hand. There is no signup form: on its first start the MCP server asks the host for its own access token (`POST /api/tokens`) and saves it to `~/.config/share-me/config.json` (mode 600). Each machine, or each agent with its own `HOME`, gets a separate token.
 
 ```bash
-claude mcp add share-me --scope user -- npx -y share-me-mcp
+claude mcp add share-me --scope user -- npx -y share-me-mcp@0.1.0
 ```
 
 ```bash
-codex mcp add share-me -- npx -y share-me-mcp
+codex mcp add share-me -- npx -y share-me-mcp@0.1.0
 ```
 
 For Cursor (`~/.cursor/mcp.json`) or Claude Desktop (`claude_desktop_config.json`):
 
 ```json
-{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp"] } } }
+{ "mcpServers": { "share-me": { "command": "npx", "args": ["-y", "share-me-mcp@0.1.0"] } } }
 ```
 
 Agents share files from `~/agent-output` by default (created automatically). Env vars still work and override the saved login.
@@ -135,16 +135,16 @@ Agents share files from `~/agent-output` by default (created automatically). Env
 Other ways to get a token, in a terminal:
 
 ```bash
-npx -y share-me-mcp signup https://shareme.lol
+npx -y share-me-mcp@0.1.0 signup https://shareme.lol
 ```
 
 ```bash
-npx -y share-me-mcp login https://shareme.lol
+npx -y share-me-mcp@0.1.0 login https://shareme.lol
 ```
 
 `signup` gets a fresh self-service token; `login` saves a token someone gave you (it prompts without echoing and checks it first).
 
-> The `npx` commands work once the `mcp/` package is published to npm as `share-me-mcp` (`npm publish -w mcp`). Until then, use `node /path/to/share-me/mcp/dist/index.js` in place of `npx -y share-me-mcp`.
+> The `npx` commands work once the `mcp/` package is published to npm as `share-me-mcp` (`npm publish -w mcp`). Until then, use `node /path/to/share-me/mcp/dist/index.js` in place of `npx -y share-me-mcp@0.1.0`.
 
 ## Configuration
 

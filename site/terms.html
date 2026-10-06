@@ -1,0 +1,73 @@
+<title>Terms · share-me</title>
+<meta name="description" content="Terms of use and abuse reporting for the hosted share-me service at shareme.lol.">
+<style>
+  /* Legal page in the landing page's Study theme, with the same self-hosted fonts. */
+  @font-face { font-family: "DM Sans"; font-style: normal; font-weight: 300 500; font-display: swap; src: url(/fonts/dm-sans.woff2) format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 300 500; font-display: swap; src: url(/fonts/jetbrains-mono.woff2) format("woff2"); }
+  :root {
+    color-scheme: dark;
+    --bg: #000; --line-card: rgba(239,230,223,0.1);
+    --ink: #efe6df; --ink-soft: #918a85; --body: #a39c96; --accent: #ec9117;
+    --sans: "DM Sans", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--body); font: 400 16px/1.6 var(--sans); }
+  main { max-width: 44rem; margin: 0 auto; padding: 56px 16px 96px; }
+  a { color: var(--accent); }
+  .back { font: 400 13px/1 var(--mono); text-decoration: none; }
+  h1 { color: var(--ink); font: 500 36px/1.15 var(--sans); margin: 32px 0 8px; }
+  h2 { color: var(--ink); font: 500 13px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .06em; margin: 36px 0 8px; }
+  p { margin: 0 0 12px; }
+  ul { margin: 0 0 12px; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  .meta { font: 400 12px/1.4 var(--mono); color: var(--ink-soft); }
+  footer { border-top: 1px solid var(--line-card); margin-top: 56px; padding-top: 20px; font: 400 12px/1.6 var(--mono); color: var(--ink-soft); }
+</style>
+
+<main>
+  <a class="back" href="/">← share-me</a>
+  <h1>Terms of use</h1>
+  <p>These terms apply to the hosted service at shareme.lol. If you run your own share-me host, they don't apply to it.</p>
+  <p class="meta">Last updated 6 Oct 2026</p>
+
+  <h2>1. The service</h2>
+  <p>shareme.lol stores files that agents upload with a share-me access token and serves them at an unguessable link until the link expires (24 hours by default, at most 7 days) or is revoked. The service is free and provided as is. Each token has a storage quota, and uploads, downloads and signups are rate-limited. We may change or end the service at any time, and files can disappear before their link expires, for example after a server move. Don't use it as your only copy of anything.</p>
+
+  <h2>2. What a link does and doesn't do</h2>
+  <p>When a link expires or is revoked, we delete the file from our server. Anyone who opened the link before that may have saved a copy, and we can't take that back. Share only files the recipient is allowed to keep.</p>
+
+  <h2>3. Not allowed</h2>
+  <p>You may not use shareme.lol to upload or share:</p>
+  <ul>
+    <li>content that is illegal under German or EU law, including child sexual abuse material, terrorist content and incitement to hatred;</li>
+    <li>malware, phishing pages or anything else meant to deceive or harm the people who open the link;</li>
+    <li>material that infringes copyright, trademarks or other people's rights;</li>
+    <li>other people's personal data without a legal basis, or content that harasses or threatens someone.</li>
+  </ul>
+  <p>You also may not get around quotas or rate limits (for example by creating tokens in bulk), use the service as a CDN or permanent file host, or try to access files or tokens that aren't yours.</p>
+
+  <h2>4. Your responsibility</h2>
+  <p>You are responsible for the files your agent uploads with your token, as if you had uploaded them yourself. Keep your token private; anyone who has it can upload in your name.</p>
+
+  <h2 id="report">5. Reporting abuse</h2>
+  <p>If a shareme.lol link breaks these terms or the law, email <a href="mailto:support@zoldhq.com?subject=Abuse%20report">support@zoldhq.com</a> with the subject "Abuse report". Please include:</p>
+  <ul>
+    <li>the full link (shareme.lol/f/…);</li>
+    <li>why you think the content is illegal or breaks these terms;</li>
+    <li>your name and email address, unless you report child sexual abuse material, which you may report anonymously;</li>
+    <li>a statement that you believe your report is accurate and complete.</li>
+  </ul>
+  <p>We confirm that we received your report, review it promptly and tell you what we decided. Content that is clearly illegal is taken down as soon as we know about it. Where the law requires it, we pass reports on to the authorities. Tokens are anonymous, so we usually can't notify the uploader.</p>
+
+  <h2>6. What we do about breaches</h2>
+  <p>If we have reason to believe these terms are broken, we can delete files, revoke the token that uploaded them (which deletes all of its files) and block further signups from the same source, without notice.</p>
+
+  <h2>7. Liability</h2>
+  <p>We are liable without limitation for intent and gross negligence and for injury to life, body or health. For slight negligence we are liable only for breach of an essential contractual obligation, limited to the damage typical and foreseeable for a free service. Otherwise we are not liable, in particular for lost files.</p>
+
+  <h2>8. Law</h2>
+  <p>German law applies. Provider details are in the <a href="/imprint">imprint</a>; how we handle personal data, including abuse reports, is in the <a href="/privacy">privacy policy</a>.</p>
+
+  <footer><a href="/terms">Terms</a> · <a href="/imprint">Imprint</a> · <a href="/privacy">Privacy</a></footer>
+</main>
