@@ -80,7 +80,9 @@ describe("agent → MCP → host → recipient", () => {
     const link = shared.structuredContent;
     expect(link.url).toMatch(/^https:\/\/share\.example\.com\/f\/[\w-]{22}\/summary\.md$/);
 
-    const download = await fetch(`${base}${new URL(link.url).pathname}`);
+    const page = await fetch(`${base}${new URL(link.url).pathname}`);
+    expect(await page.text()).toContain("<h1>Results</h1>");
+    const download = await fetch(`${base}${new URL(link.url).pathname}?raw=1`);
     expect(await download.text()).toBe("# Results\nAll green.");
     expect(download.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
 

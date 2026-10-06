@@ -1,10 +1,12 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pipeline } from "node:stream";
+import { text } from "node:stream/consumers";
 import { createApi, isApiPath, type Accounts } from "./api.js";
 import type { HostConfig } from "./config.js";
 import { clientIp, HttpError, sendJson, tooManyRequests } from "./http.js";
 import { FALLBACK_LANDING, type LegalPages } from "./landing.js";
 import { createLimits } from "./limits.js";
+import { isRenderableMarkdown, renderMarkdownPage } from "./markdownView.js";
 import { renderSetupGuide } from "./setupGuide.js";
 import { FileTooLargeError, type FileStore } from "./store.js";
 
@@ -76,11 +78,19 @@ export function createServer(
   const limits = createLimits(config);
   const handleApi = createApi(config, store, now, limits, accounts);
 
-  function download(req: IncomingMessage, id: string, method: string, res: ServerResponse): void {
+  // Markdown is shown rendered (still under the sandbox CSP); ?raw serves the original file.
+  async function renderMarkdown(id: string, filename: string, method: string, res: ServerResponse): Promise<void> {
+    const page = Buffer.from(renderMarkdownPage(await text(store.openBlob(id)), filename));
+    res.writeHead(200, { ...DOWNLOAD_HEADERS, "content-type": "text/html; charset=utf-8", "content-length": page.length });
+    res.end(method === "HEAD" ? undefined : page);
+  }
+
+  async function download(req: IncomingMessage, id: string, method: string, raw: boolean, res: ServerResponse): Promise<void> {
     const wait = limits.downloads.take(clientIp(req, config.trustCfConnectingIp), now());
     if (wait > 0) throw tooManyRequests("Too many downloads from your network; try again shortly", wait);
     const meta = store.get(id, now());
     if (!meta) throw new HttpError(404, "Link not found or expired");
+    if (!raw && isRenderableMarkdown(meta.contentType, meta.size)) return renderMarkdown(id, meta.filename, method, res);
     res.writeHead(200, {
       ...DOWNLOAD_HEADERS,
       "content-type": meta.contentType,
@@ -95,7 +105,7 @@ export function createServer(
   }
 
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const { pathname } = new URL(req.url ?? "/", "http://localhost");
+    const { pathname, searchParams } = new URL(req.url ?? "/", "http://localhost");
     const method = req.method ?? "GET";
 
     if (method === "GET" && pathname === "/healthz") return sendJson(res, 200, { ok: true });
@@ -123,7 +133,7 @@ export function createServer(
     }
 
     const fileMatch = /^\/f\/([^/]+)(?:\/[^/]*)?$/.exec(pathname);
-    if ((method === "GET" || method === "HEAD") && fileMatch) return download(req, fileMatch[1], method, res);
+    if ((method === "GET" || method === "HEAD") && fileMatch) return download(req, fileMatch[1], method, searchParams.has("raw"), res);
 
     if (isApiPath(pathname)) return handleApi(req, res, pathname, method);
     throw new HttpError(404, "Not found");

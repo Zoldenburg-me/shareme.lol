@@ -9,14 +9,23 @@ RUN npm ci --ignore-scripts
 COPY host/src host/src
 RUN npx tsc -p host
 
+# Production dependencies of the host only (hoisted to /app/node_modules by the workspace install).
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY host/package.json host/
+COPY mcp/package.json mcp/
+RUN npm ci --omit=dev --ignore-scripts --workspace host && rm -f node_modules/share-me-host node_modules/share-me-mcp
+
 FROM node:22-alpine
 # su-exec lets the entrypoint fix ownership of Akash's root-owned persistent volume, then drop to the node user.
 RUN apk add --no-cache su-exec
 ENV NODE_ENV=production DATA_DIR=/data PORT=8080
 WORKDIR /app
 COPY host/package.json ./package.json
+COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/host/dist ./dist
-COPY site/index.html site/imprint.html site/privacy.html ./site/
+COPY site/index.html site/imprint.html site/privacy.html site/terms.html ./site/
 COPY site/fonts ./site/fonts
 RUN mkdir -p /data && chown node:node /data
 EXPOSE 8080
