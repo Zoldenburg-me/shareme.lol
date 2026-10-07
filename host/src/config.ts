@@ -30,6 +30,13 @@ export interface HostConfig {
   readonly uploadsPerTokenPerHour: number;
   /** Downloads per client IP per minute. */
   readonly downloadsPerIpPerMinute: number;
+  /** Live files (including uploads in progress) each self-service token may hold at once. */
+  readonly maxFilesPerToken: number;
+  /** Uploads one self-service token may have streaming at the same time. */
+  readonly concurrentUploadsPerToken: number;
+  /** An upload that brings fewer bytes than this per second over one pace window is aborted (408). */
+  readonly minUploadBytesPerSecond: number;
+  readonly uploadPaceWindowMs: number;
 }
 
 const MIN_TOKEN_LENGTH = 32;
@@ -99,5 +106,9 @@ export function loadConfig(env: Env): HostConfig {
     authFailuresPerIpPerHour: positiveInt(env, "AUTH_FAILURES_PER_IP_PER_HOUR", 30),
     uploadsPerTokenPerHour: positiveInt(env, "UPLOADS_PER_TOKEN_PER_HOUR", 60),
     downloadsPerIpPerMinute: positiveInt(env, "DOWNLOADS_PER_IP_PER_MINUTE", 300),
+    maxFilesPerToken: positiveInt(env, "MAX_FILES_PER_TOKEN", 200),
+    concurrentUploadsPerToken: positiveInt(env, "MAX_CONCURRENT_UPLOADS_PER_TOKEN", 2),
+    minUploadBytesPerSecond: positiveInt(env, "MIN_UPLOAD_BYTES_PER_SECOND", 1024),
+    uploadPaceWindowMs: positiveInt(env, "UPLOAD_PACE_WINDOW_SECONDS", 10) * 1000,
   };
 }

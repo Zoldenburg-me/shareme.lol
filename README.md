@@ -160,10 +160,13 @@ npx -y share-me-mcp@0.1.0 login https://shareme.lol
 | `MAX_TOTAL_MB` | `9216` | Storage quota across all live files. Keep it below the volume size |
 | `OPEN_SIGNUP` | off | `1` lets anyone get a self-service token at `POST /api/tokens` |
 | `TOKEN_QUOTA_MB` | `250` | Storage each self-service token may use at once |
+| `MAX_FILES_PER_TOKEN` | `200` | Files each self-service token may have shared at once |
+| `MAX_CONCURRENT_UPLOADS_PER_TOKEN` | `2` | Uploads one self-service token may have in progress at once; more get 429 |
+| `MIN_UPLOAD_BYTES_PER_SECOND` / `UPLOAD_PACE_WINDOW_SECONDS` | `1024` / `10` | An upload that sends less than this in any window is aborted with 408, so a stalled upload can't hold storage |
 | `SIGNUPS_PER_IP_PER_HOUR` / `SIGNUPS_PER_DAY` | `5` / `500` | Signup throttle |
 | `TRUST_CF_CONNECTING_IP` | off | `1` takes the client IP from Cloudflare's `CF-Connecting-IP`; only when every request comes through Cloudflare |
 | `API_REQUESTS_PER_IP_PER_MINUTE` | `120` | Requests to `/api` per client IP; over it the host answers 429 with `Retry-After` |
-| `AUTH_FAILURES_PER_IP_PER_HOUR` | `30` | Wrong tokens per client IP before that IP is locked out of `/api` for the rest of the hour |
+| `AUTH_FAILURES_PER_IP_PER_HOUR` | `30` | Wrong tokens per client IP before that IP is locked out of `/api` for the rest of the hour (valid tokens from it still work) |
 | `UPLOADS_PER_TOKEN_PER_HOUR` | `60` | Uploads per self-service token (the admin token is exempt) |
 | `DOWNLOADS_PER_IP_PER_MINUTE` | `300` | Link downloads per client IP |
 | `ALLOWED_EXTENSIONS` | all known types | Comma- or space-separated subset, e.g. `pdf,png,md`. Known types: `pdf html htm md txt log csv json xml docx xlsx pptx zip png jpg jpeg gif webp svg mp4 webm mp3 wav`. To add a type, add it to [`host/src/fileTypes.ts`](host/src/fileTypes.ts) with its content type and signature |

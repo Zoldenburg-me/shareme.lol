@@ -28,6 +28,10 @@ describe("loadConfig", () => {
       authFailuresPerIpPerHour: 30,
       uploadsPerTokenPerHour: 60,
       downloadsPerIpPerMinute: 300,
+      maxFilesPerToken: 200,
+      concurrentUploadsPerToken: 2,
+      minUploadBytesPerSecond: 1024,
+      uploadPaceWindowMs: 10_000,
     });
   });
 
