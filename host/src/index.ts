@@ -3,6 +3,7 @@ import { createServer } from "./app.js";
 import { loadConfig } from "./config.js";
 import { loadFonts } from "./fonts.js";
 import { loadLandingPage, loadLegalPages } from "./landing.js";
+import { purgeOrphanedFiles } from "./orphans.js";
 import { renderSetupGuide } from "./setupGuide.js";
 import { SignupLimiter } from "./signupLimiter.js";
 import { FileStore } from "./store.js";
@@ -11,13 +12,16 @@ import { TokenStore } from "./tokens.js";
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
   const store = await FileStore.open(config.dataDir);
+  const tokens = await TokenStore.open(config.dataDir);
+  const orphans = await purgeOrphanedFiles(store, tokens);
+  if (orphans > 0) console.log(`[share-host] removed ${orphans} file(s) left by revoked tokens`);
   const server = createServer(config, store, Date.now, {
     landing: await loadLandingPage(config.landingPage, config.publicBaseUrl),
     setup: renderSetupGuide(config.publicBaseUrl),
     legal: await loadLegalPages(dirname(config.landingPage), config.publicBaseUrl),
     fonts: await loadFonts(dirname(config.landingPage)),
   }, {
-    tokens: await TokenStore.open(config.dataDir),
+    tokens,
     limiter: new SignupLimiter(config.signupsPerIpPerHour, config.signupsPerDay),
   });
 

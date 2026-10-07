@@ -84,6 +84,14 @@ describe("request rate limits", () => {
     expect((await getConfig(ADMIN, "198.51.100.7")).status).toBe(200);
   });
 
+  it("does not count requests without a token toward the lockout, so other sites can't trigger it", async () => {
+    await start({ authFailuresPerIpPerHour: 2 });
+    for (let i = 0; i < 3; i++) {
+      expect((await fetch(`${base}/api/files`, { headers: from("203.0.113.1") })).status).toBe(401);
+    }
+    expect((await getConfig(ADMIN)).status).toBe(200);
+  });
+
   it("limits uploads per self-service token but not for the admin token", async () => {
     await start({ uploadsPerTokenPerHour: 1 });
     const { token } = (await (await fetch(`${base}/api/tokens`, { method: "POST", headers: from("192.0.2.9") })).json()) as { token: string };
