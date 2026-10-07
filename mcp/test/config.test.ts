@@ -29,6 +29,12 @@ describe("loadMcpConfig", () => {
     expect(config.apiToken).toBe(TOKEN);
   });
 
+  it("never sends a saved token to a different host than the one it was saved for", () => {
+    const saved = { host: "https://saved.example.com", token: "saved-token" };
+    expect(() => loadMcpConfig({ SHARE_HOST_URL: "https://other.example.com" }, saved, HOME)).toThrow(/saved\.example\.com/);
+    expect(loadMcpConfig({ SHARE_HOST_URL: "https://saved.example.com/" }, saved, HOME).apiToken).toBe("saved-token");
+  });
+
   it("defaults the shareable folder to ~/agent-output", () => {
     const config = loadMcpConfig({ ...base, SHARE_ALLOWED_DIRS: "" }, undefined, HOME);
     expect(config.allowedDirs).toEqual([join(HOME, "agent-output")]);

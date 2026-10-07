@@ -129,6 +129,11 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
       clock: now,
       ...(who.kind === "user" ? { owner: who.id } : {}),
     });
+    // The token may have been revoked while the body was streaming; its cascade has already run.
+    if (who.kind === "user" && !accounts?.tokens.hasId(who.id)) {
+      await store.delete(meta.id);
+      throw new HttpError(401, "Token was revoked during the upload");
+    }
     sendJson(res, 201, toPublic(meta, config.publicBaseUrl));
   }
 
@@ -168,7 +173,9 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
     if (locked > 0) throw tooManyRequests("Too many failed logins from your network; try again later", locked);
     const who = authenticate(req);
     if (!who) {
-      limits.authFailures.take(ip, now());
+      // Only a wrong token counts. Requests with no token are what any other site can make a
+      // visitor's browser send (adding Authorization needs CORS, which this API never grants).
+      if (/^Bearer /.test(req.headers.authorization ?? "")) limits.authFailures.take(ip, now());
       throw new HttpError(401, "Unauthorized");
     }
     if (method === "POST" && pathname === "/api/files") return upload(req, res, who);

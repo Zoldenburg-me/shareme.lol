@@ -106,6 +106,20 @@ describe("FileStore", () => {
     expect(reopened.list(NOW)).toEqual([]);
   });
 
+  it("deletes files whose owner token no longer exists, keeping admin files", async () => {
+    const mk = (owner: string | undefined) =>
+      store.create({ filename: "a.txt", contentType: "text/plain", ttlSeconds: 60, maxBytes: 1024, body: Readable.from(["x"]), clock: () => NOW, owner });
+    const live = await mk("tok_live");
+    const orphan = await mk("tok_gone");
+    const admin = await mk(undefined);
+
+    expect(await store.deleteOrphans((owner) => owner === "tok_live")).toBe(1);
+
+    expect(store.get(live.id, NOW)).toBeDefined();
+    expect(store.get(admin.id, NOW)).toBeDefined();
+    expect(store.get(orphan.id, NOW)).toBeUndefined();
+  });
+
   it("records the owner and scopes listing, usage and bulk deletion to it", async () => {
     const mk = (owner: string | undefined, body: string) =>
       store.create({ filename: "a.txt", contentType: "text/plain", ttlSeconds: 60, maxBytes: 1024, body: Readable.from([body]), clock: () => NOW, owner });

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -116,6 +116,32 @@ describe("self-service accounts", () => {
     await upload(token, "hi");
     expect((await fetch(`${base}/api/tokens/me`, { method: "DELETE", headers: bearer(token) })).status).toBe(204);
     expect((await fetch(`${base}/api/files`, { headers: bearer(token) })).status).toBe(401);
+    expect(await list(ADMIN)).toHaveLength(0);
+  });
+
+  it("drops an upload that finishes after its token was revoked", async () => {
+    await start({ tokenQuotaBytes: 1000 });
+    const { token } = await newToken();
+    let push!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start: (c) => { push = c; } });
+    // More than the 512-byte content sniff, so the server gets past it and starts writing.
+    push.enqueue(new TextEncoder().encode("x".repeat(600)));
+    const pending = fetch(`${base}/api/files`, {
+      method: "POST",
+      headers: { ...bearer(token), "x-filename": "late.md" },
+      body,
+      duplex: "half",
+    } as RequestInit);
+    // Wait until the server is writing the blob, so the revoke really lands mid-upload
+    // (a revoke before authentication would also give 401 and prove nothing).
+    for (let i = 0; i < 100 && (await readdir(join(dir, "files")).catch(() => [])).length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(await readdir(join(dir, "files"))).toHaveLength(1);
+    expect((await fetch(`${base}/api/tokens/me`, { method: "DELETE", headers: bearer(token) })).status).toBe(204);
+    push.close();
+
+    expect((await pending).status).toBe(401);
     expect(await list(ADMIN)).toHaveLength(0);
   });
 

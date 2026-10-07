@@ -137,6 +137,13 @@ export class FileStore {
     return ids.length;
   }
 
+  /** Delete files whose owner token is gone, e.g. after a crash between revoke and its cascade. */
+  async deleteOrphans(isLiveOwner: (owner: string) => boolean): Promise<number> {
+    const ids = [...this.index.values()].filter((m) => m.owner !== undefined && !isLiveOwner(m.owner)).map((m) => m.id);
+    for (const id of ids) await this.delete(id);
+    return ids.length;
+  }
+
   async sweep(now: number): Promise<string[]> {
     const expired = [...this.index.values()].filter((m) => m.expiresAt <= now).map((m) => m.id);
     const removed: string[] = [];

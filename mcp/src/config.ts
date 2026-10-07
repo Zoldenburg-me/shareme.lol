@@ -69,8 +69,17 @@ export function loadMcpConfig(env: Env, stored?: StoredLogin, home: string = hom
   if (!host) throw new Error(`No share host configured. ${LOGIN_HINT}, or set SHARE_HOST_URL.`);
   const token = env.SHARE_API_TOKEN || stored?.token;
   if (!token) throw new Error(`No API token configured. ${LOGIN_HINT}, or set SHARE_API_TOKEN.`);
+  const insecure = env.SHARE_ALLOW_INSECURE_HTTP === "1";
+  const hostUrl = normalizeHostUrl(host, insecure);
+  // A saved token only ever goes back to the host that issued it.
+  if (!env.SHARE_API_TOKEN && stored && normalizeHostUrl(stored.host, insecure) !== hostUrl) {
+    throw new Error(
+      `The saved login is for ${stored.host}, not ${hostUrl}. Run \`npx -y share-me-mcp login ${hostUrl}\` in a terminal, ` +
+        `set SHARE_API_TOKEN, or unset SHARE_HOST_URL to keep using ${stored.host}.`,
+    );
+  }
   return {
-    hostUrl: normalizeHostUrl(host, env.SHARE_ALLOW_INSECURE_HTTP === "1"),
+    hostUrl,
     apiToken: token,
     allowedDirs: allowedDirs(env, home),
     defaultTtlHours: positiveNumber(env, "SHARE_DEFAULT_TTL_HOURS", 24),

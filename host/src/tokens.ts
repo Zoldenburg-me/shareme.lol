@@ -42,6 +42,10 @@ export class TokenStore {
     return this.records.get(hashToken(token));
   }
 
+  hasId(id: string): boolean {
+    return [...this.records.values()].some((r) => r.id === id);
+  }
+
   count(): number {
     return this.records.size;
   }
