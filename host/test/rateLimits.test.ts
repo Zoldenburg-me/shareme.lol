@@ -40,6 +40,10 @@ describe("request rate limits", () => {
       authFailuresPerIpPerHour: 100,
       uploadsPerTokenPerHour: 100,
       downloadsPerIpPerMinute: 100,
+      maxFilesPerToken: 200,
+      concurrentUploadsPerToken: 2,
+      minUploadBytesPerSecond: 1024,
+      uploadPaceWindowMs: 10_000,
       ...overrides,
     };
     const accounts = { tokens: await TokenStore.open(dir), limiter: new SignupLimiter(100, 1000) };
@@ -74,14 +78,16 @@ describe("request rate limits", () => {
     expect((await getConfig(ADMIN, "198.51.100.7")).status).toBe(200);
   });
 
-  it("locks an IP out after too many wrong tokens, even for a right one", async () => {
+  it("locks an IP out of wrong tokens, but never refuses a right one from it", async () => {
     await start({ authFailuresPerIpPerHour: 2 });
     expect((await getConfig("wrong")).status).toBe(401);
     expect((await getConfig("wrong")).status).toBe(401);
-    const locked = await getConfig(ADMIN);
+    const locked = await getConfig("wrong");
     expect(locked.status).toBe(429);
     expect(locked.headers.get("retry-after")).not.toBeNull();
-    expect((await getConfig(ADMIN, "198.51.100.7")).status).toBe(200);
+    // Someone else on the same IP or NAT still gets in with a valid token.
+    expect((await getConfig(ADMIN)).status).toBe(200);
+    expect((await getConfig("wrong", "198.51.100.7")).status).toBe(401);
   });
 
   it("does not count requests without a token toward the lockout, so other sites can't trigger it", async () => {

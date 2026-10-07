@@ -114,6 +114,11 @@ export class FileStore {
     return [...this.index.values()].filter((m) => m.owner === owner).reduce((sum, m) => sum + m.size, 0);
   }
 
+  /** Files of `owner` still on disk, expired-but-unswept included (as in usedBytes). */
+  fileCount(owner: string): number {
+    return [...this.index.values()].filter((m) => m.owner === owner).length;
+  }
+
   totalBytes(): number {
     return [...this.index.values()].reduce((sum, m) => sum + m.size, 0);
   }

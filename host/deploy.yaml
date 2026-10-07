@@ -22,6 +22,8 @@ services:
       - MAX_TOTAL_MB=9216           # keep below the 10Gi data volume
       - OPEN_SIGNUP=1               # anyone can POST /api/tokens for their own token
       - TOKEN_QUOTA_MB=250          # storage per self-service token
+      - MAX_FILES_PER_TOKEN=200     # files per self-service token
+      - MAX_CONCURRENT_UPLOADS_PER_TOKEN=2
       - SIGNUPS_PER_IP_PER_HOUR=5
       - SIGNUPS_PER_DAY=500
       - TRUST_CF_CONNECTING_IP=1    # safe: the host is only reachable through the Cloudflare Tunnel

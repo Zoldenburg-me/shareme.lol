@@ -5,6 +5,8 @@ import { checkContent, contentTypeOf, extensionOf, HEAD_BYTES } from "./fileType
 import { clientIp, HttpError, sendJson, tooManyRequests } from "./http.js";
 import { peek } from "./peek.js";
 import type { Limits } from "./limits.js";
+import { Reservations } from "./reservations.js";
+import { paceUpload } from "./uploadPace.js";
 import type { SignupLimiter } from "./signupLimiter.js";
 import type { FileMeta, FileStore } from "./store.js";
 import type { TokenStore } from "./tokens.js";
@@ -23,6 +25,8 @@ type Clock = () => number;
 const MAX_FILENAME_LENGTH = 255;
 const MEBIBYTE = 1024 * 1024;
 const NO_STORE = { "cache-control": "no-store" };
+// Suggested wait when a token already has its maximum number of uploads streaming.
+const UPLOAD_BUSY_RETRY_MS = 5_000;
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest();
 const megabytes = (bytes: number) => `${Math.round(bytes / MEBIBYTE)} MB`;
@@ -73,6 +77,8 @@ export function isApiPath(pathname: string): boolean {
 }
 
 export function createApi(config: HostConfig, store: FileStore, now: Clock, limits: Limits, accounts?: Accounts) {
+  const reservations = new Reservations();
+
   function authenticate(req: IncomingMessage): Principal | undefined {
     const match = /^Bearer (.+)$/.exec(req.headers.authorization ?? "");
     if (!match) return undefined;
@@ -101,34 +107,64 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
   }
 
   async function upload(req: IncomingMessage, res: ServerResponse, who: Principal): Promise<void> {
-    const wait = who.kind === "user" ? limits.uploads.take(who.id, now()) : 0;
+    const owner = who.kind === "user" ? who.id : undefined;
+    // Each streaming upload holds quota until it ends, so cap how many one token can hold at once;
+    // checked before the hourly limit so a refused request doesn't use up that allowance.
+    if (owner && reservations.ownerFiles(owner) >= config.concurrentUploadsPerToken) {
+      throw tooManyRequests(
+        `${config.concurrentUploadsPerToken} uploads are already in progress for this token; wait for one to finish`,
+        UPLOAD_BUSY_RETRY_MS,
+      );
+    }
+    const wait = owner ? limits.uploads.take(owner, now()) : 0;
     if (wait > 0) throw tooManyRequests(`Upload limit reached (${config.uploadsPerTokenPerHour} per hour); try again later`, wait);
+    const hasLength = req.headers["content-length"] !== undefined;
     const declared = Number(req.headers["content-length"] ?? 0);
+    if (hasLength && declared === 0) throw new HttpError(400, "File is empty");
     if (declared > config.maxFileBytes) throw new HttpError(413, "File too large");
-    const hostRemaining = config.maxTotalBytes - store.totalBytes();
+    // Everything from here to reservations.hold() is synchronous, so no other upload can claim
+    // the same free space between the check and the hold.
+    const hostRemaining = config.maxTotalBytes - store.totalBytes() - reservations.totalBytes();
     if (declared > hostRemaining || hostRemaining <= 0) throw new HttpError(507, "Share host storage is full; try again later");
-    const ownerRemaining = who.kind === "user" ? config.tokenQuotaBytes - store.usedBytes(who.id) : Infinity;
+    const ownerRemaining = owner ? config.tokenQuotaBytes - store.usedBytes(owner) - reservations.ownerBytes(owner) : Infinity;
     if (declared > ownerRemaining || ownerRemaining <= 0) {
       throw new HttpError(507, `Your storage quota (${megabytes(config.tokenQuotaBytes)}) is used up; revoke links or wait for them to expire`);
+    }
+    if (owner && store.fileCount(owner) + reservations.ownerFiles(owner) >= config.maxFilesPerToken) {
+      throw new HttpError(507, `You already have ${config.maxFilesPerToken} files shared; revoke links or wait for them to expire`);
     }
     const filename = parseFilename(req);
     const ext = requireAllowedExtension(filename, config.allowedExtensions);
     const ttlSeconds = parseTtl(req, config);
-    const { head, body, discard } = await peek(req, HEAD_BYTES);
-    const mismatch = checkContent(ext, head);
-    if (mismatch) {
-      discard();
-      throw new HttpError(415, mismatch);
+    // A declared length is all the body can be; without one, hold everything this upload may use.
+    const maxBytes = hasLength ? declared : Math.min(config.maxFileBytes, hostRemaining, ownerRemaining);
+    const release = reservations.hold(maxBytes, owner);
+    // Paced from the moment the space is held, so a client can't sit on it by trickling bytes.
+    const paced = paceUpload(req, config.minUploadBytesPerSecond, config.uploadPaceWindowMs);
+    try {
+      const { head, body, discard } = await peek(paced.body, HEAD_BYTES);
+      if (head.length === 0) throw new HttpError(400, "File is empty");
+      const mismatch = checkContent(ext, head);
+      if (mismatch) {
+        discard();
+        throw new HttpError(415, mismatch);
+      }
+      return await finishUpload(res, who, await store.create({
+        filename,
+        contentType: contentTypeOf(ext),
+        ttlSeconds,
+        maxBytes,
+        body,
+        clock: now,
+        ...(owner ? { owner } : {}),
+      }));
+    } finally {
+      paced.stop();
+      release();
     }
-    const meta = await store.create({
-      filename,
-      contentType: contentTypeOf(ext),
-      ttlSeconds,
-      maxBytes: Math.min(config.maxFileBytes, hostRemaining, ownerRemaining),
-      body,
-      clock: now,
-      ...(who.kind === "user" ? { owner: who.id } : {}),
-    });
+  }
+
+  async function finishUpload(res: ServerResponse, who: Principal, meta: FileMeta): Promise<void> {
     // The token may have been revoked while the body was streaming; its cascade has already run.
     if (who.kind === "user" && !accounts?.tokens.hasId(who.id)) {
       await store.delete(meta.id);
@@ -168,11 +204,13 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
     const busy = limits.api.take(ip, now());
     if (busy > 0) throw tooManyRequests("Too many requests; slow down", busy);
     if (method === "POST" && pathname === "/api/tokens") return signup(req, res);
-    // Once an IP has sent too many wrong tokens, refuse it before even checking the token.
-    const locked = limits.authFailures.retryAfter(ip, now());
-    if (locked > 0) throw tooManyRequests("Too many failed logins from your network; try again later", locked);
     const who = authenticate(req);
     if (!who) {
+      // The lockout only refuses wrong tokens, so a neighbour on the same IP or NAT can't lock out
+      // valid ones. Guessing is still bounded by the per-IP api limit above, and tokens are 256-bit
+      // (the admin token at least 32 characters), so it can't succeed in practice.
+      const locked = limits.authFailures.retryAfter(ip, now());
+      if (locked > 0) throw tooManyRequests("Too many failed logins from your network; try again later", locked);
       // Only a wrong token counts. Requests with no token are what any other site can make a
       // visitor's browser send (adding Authorization needs CORS, which this API never grants).
       if (/^Bearer /.test(req.headers.authorization ?? "")) limits.authFailures.take(ip, now());

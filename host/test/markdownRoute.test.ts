@@ -38,6 +38,10 @@ describe("markdown downloads", () => {
       authFailuresPerIpPerHour: 30,
       uploadsPerTokenPerHour: 60,
       downloadsPerIpPerMinute: 300,
+      maxFilesPerToken: 200,
+      concurrentUploadsPerToken: 2,
+      minUploadBytesPerSecond: 1024,
+      uploadPaceWindowMs: 10_000,
     };
     server = createServer(config, await FileStore.open(dir), Date.now, { landing: "<title>landing</title>", setup: "# setup" });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
