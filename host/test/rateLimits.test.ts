@@ -40,6 +40,7 @@ describe("request rate limits", () => {
       authFailuresPerIpPerHour: 100,
       uploadsPerTokenPerHour: 100,
       downloadsPerIpPerMinute: 100,
+      shortLinkMissesPerIpPerHour: 100,
       maxFilesPerToken: 200,
       concurrentUploadsPerToken: 2,
       minUploadBytesPerSecond: 1024,

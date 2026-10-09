@@ -41,6 +41,7 @@ describe("self-service accounts", () => {
       authFailuresPerIpPerHour: 30,
       uploadsPerTokenPerHour: 60,
       downloadsPerIpPerMinute: 300,
+      shortLinkMissesPerIpPerHour: 60,
       maxFilesPerToken: 200,
       concurrentUploadsPerToken: 2,
       minUploadBytesPerSecond: 1024,

@@ -14,6 +14,8 @@ export interface FileMeta {
   readonly expiresAt: number;
   /** Token id of the uploader; absent for files uploaded with the admin token. */
   readonly owner?: string;
+  /** Code behind the /r/<code> short link; missing only if it could not be saved for an older file. */
+  readonly shortCode?: string;
 }
 
 export interface CreateInput {
@@ -38,7 +40,28 @@ const ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const BLOB = "blob";
 const META = "meta.json";
 
+// Short codes are bearer secrets too: 10 letters or digits is ~60 bits, and misses are rate-limited.
+const SHORT_CODE_LENGTH = 10;
+const SHORT_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+// Largest multiple of the alphabet size that fits in a byte; higher bytes are dropped to avoid bias.
+const SHORT_CODE_BYTE_LIMIT = 256 - (256 % SHORT_CODE_ALPHABET.length);
+const SHORT_CODE_PATTERN = /^[A-Za-z0-9]{10}$/;
+
 export const isValidId = (id: string): boolean => ID_PATTERN.test(id);
+export const isValidShortCode = (code: string): boolean => SHORT_CODE_PATTERN.test(code);
+
+function randomShortCode(): string {
+  let code = "";
+  while (code.length < SHORT_CODE_LENGTH) {
+    for (const byte of randomBytes(SHORT_CODE_LENGTH * 2)) {
+      if (byte < SHORT_CODE_BYTE_LIMIT && code.length < SHORT_CODE_LENGTH) code += SHORT_CODE_ALPHABET[byte % SHORT_CODE_ALPHABET.length];
+    }
+  }
+  return code;
+}
+
+const codeIndex = (metas: Iterable<FileMeta>): ReadonlyMap<string, string> =>
+  new Map([...metas].flatMap((m) => (m.shortCode ? [[m.shortCode, m.id] as const] : [])));
 
 function sizeLimiter(maxBytes: number): { stream: Transform; bytes: () => number } {
   let seen = 0;
@@ -56,6 +79,7 @@ export class FileStore {
   private constructor(
     private readonly filesDir: string,
     private index: ReadonlyMap<string, FileMeta>,
+    private codes: ReadonlyMap<string, string> = codeIndex(index.values()),
   ) {}
 
   static async open(root: string): Promise<FileStore> {
@@ -67,7 +91,50 @@ export class FileStore {
       const meta = await readMeta(filesDir, id);
       if (meta) metas.push(meta);
     }
-    return new FileStore(filesDir, new Map(metas.map((m) => [m.id, m])));
+    const store = new FileStore(filesDir, new Map(metas.map((m) => [m.id, m])));
+    await store.backfillShortCodes();
+    return store;
+  }
+
+  /** Gives files stored before short links existed a code, saved so it survives restarts. */
+  private async backfillShortCodes(): Promise<void> {
+    for (const meta of [...this.index.values()].filter((m) => !m.shortCode)) {
+      const updated: FileMeta = { ...meta, shortCode: this.newShortCode(meta.id) };
+      try {
+        await this.writeMeta(updated);
+      } catch (err) {
+        this.releaseShortCode(updated.shortCode!);
+        // Without a saved code the link would change on every restart; keep only the full link.
+        console.error(`[share-host] could not add a short code to ${meta.id.slice(0, 4)}…:`, err);
+        continue;
+      }
+      this.remember(updated);
+    }
+  }
+
+  /** Draws an unused code and reserves it at once, so a concurrent upload can't draw the same one. */
+  private newShortCode(id: string): string {
+    for (;;) {
+      const code = randomShortCode();
+      if (this.codes.has(code)) continue;
+      this.codes = new Map([...this.codes, [code, id]]);
+      return code;
+    }
+  }
+
+  private releaseShortCode(code: string): void {
+    this.codes = new Map([...this.codes].filter(([key]) => key !== code));
+  }
+
+  private remember(meta: FileMeta): void {
+    this.index = new Map([...this.index, [meta.id, meta]]);
+    if (meta.shortCode) this.codes = new Map([...this.codes, [meta.shortCode, meta.id]]);
+  }
+
+  private async writeMeta(meta: FileMeta): Promise<void> {
+    const dir = join(this.filesDir, meta.id);
+    await writeFile(join(dir, `${META}.tmp`), JSON.stringify(meta));
+    await rename(join(dir, `${META}.tmp`), join(dir, META));
   }
 
   async create(input: CreateInput): Promise<FileMeta> {
@@ -88,10 +155,15 @@ export class FileStore {
         createdAt: finishedAt,
         expiresAt: finishedAt + input.ttlSeconds * 1000,
         ...(input.owner ? { owner: input.owner } : {}),
+        shortCode: this.newShortCode(id),
       };
-      await writeFile(join(dir, `${META}.tmp`), JSON.stringify(meta));
-      await rename(join(dir, `${META}.tmp`), join(dir, META));
-      this.index = new Map([...this.index, [id, meta]]);
+      try {
+        await this.writeMeta(meta);
+      } catch (err) {
+        this.releaseShortCode(meta.shortCode!);
+        throw err;
+      }
+      this.remember(meta);
       return meta;
     } catch (err) {
       await rm(dir, { recursive: true, force: true });
@@ -103,6 +175,12 @@ export class FileStore {
     if (!isValidId(id)) return undefined;
     const meta = this.index.get(id);
     return meta && meta.expiresAt > now ? meta : undefined;
+  }
+
+  resolveShortCode(code: string, now: number): FileMeta | undefined {
+    if (!isValidShortCode(code)) return undefined;
+    const id = this.codes.get(code);
+    return id ? this.get(id, now) : undefined;
   }
 
   /** Live files; only those of `owner` when one is given. */
@@ -129,8 +207,10 @@ export class FileStore {
   }
 
   async delete(id: string): Promise<boolean> {
-    if (!isValidId(id) || !this.index.has(id)) return false;
+    const meta = isValidId(id) ? this.index.get(id) : undefined;
+    if (!meta) return false;
     this.index = new Map([...this.index].filter(([key]) => key !== id));
+    if (meta.shortCode) this.releaseShortCode(meta.shortCode);
     await rm(join(this.filesDir, id), { recursive: true, force: true });
     return true;
   }

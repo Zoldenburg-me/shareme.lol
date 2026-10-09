@@ -61,10 +61,13 @@ function requireAllowedExtension(filename: string, allowed: readonly string[]): 
   throw new HttpError(415, `File type ${ext ? `.${ext}` : "(no extension)"} is not allowed. Allowed: ${list}`);
 }
 
+export const filePath = (meta: FileMeta): string => `/f/${meta.id}/${encodeURIComponent(meta.filename)}`;
+
 function toPublic(meta: FileMeta, baseUrl: string) {
   return {
     id: meta.id,
-    url: `${baseUrl}/f/${meta.id}/${encodeURIComponent(meta.filename)}`,
+    url: `${baseUrl}${filePath(meta)}`,
+    ...(meta.shortCode ? { shortUrl: `${baseUrl}/r/${meta.shortCode}` } : {}),
     filename: meta.filename,
     size: meta.size,
     expiresAt: new Date(meta.expiresAt).toISOString(),

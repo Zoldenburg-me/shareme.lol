@@ -53,6 +53,19 @@ describe("share tools", () => {
     expect(result.structuredContent).toEqual(link);
   });
 
+  it("share_file leads with the short link and still gives the full one", async () => {
+    const shortLink = { ...link, shortUrl: "https://share.example.com/r/Xk3p9Qa2Lm" };
+    client.upload.mockResolvedValue(shortLink);
+    const text = (await tools().shareFile({ path: join(dir, "report.html") })).content[0].text;
+    expect(text.indexOf(shortLink.shortUrl)).toBeGreaterThan(-1);
+    expect(text.indexOf(shortLink.shortUrl)).toBeLessThan(text.indexOf(link.url));
+  });
+
+  it("list_links shows the short link when the host gives one", async () => {
+    client.list.mockResolvedValue([{ ...link, shortUrl: "https://share.example.com/r/Xk3p9Qa2Lm" }]);
+    expect((await tools().listLinks()).content[0].text).toContain("https://share.example.com/r/Xk3p9Qa2Lm");
+  });
+
   it("share_file uses the default TTL and an optional display name", async () => {
     await tools().shareFile({ path: join(dir, "report.html"), filename: "Q3 Report.html" });
     expect(client.upload).toHaveBeenCalledWith(expect.objectContaining({ ttlSeconds: 86_400, filename: "Q3 Report.html" }));

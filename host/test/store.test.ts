@@ -139,6 +139,48 @@ describe("FileStore", () => {
     expect(store.list(NOW)).toHaveLength(2);
   });
 
+  describe("short codes", () => {
+    it("gives each file a 10-character letters-and-digits code that resolves to it", async () => {
+      const meta = await put("hi");
+      expect(meta.shortCode).toMatch(/^[A-Za-z0-9]{10}$/);
+      expect(store.resolveShortCode(meta.shortCode!, NOW)).toEqual(meta);
+    });
+
+    it("generates distinct codes", async () => {
+      const metas = await Promise.all(Array.from({ length: 20 }, (_, i) => put(String(i))));
+      expect(new Set(metas.map((m) => m.shortCode)).size).toBe(20);
+    });
+
+    it("does not resolve expired, deleted, unknown or malformed codes", async () => {
+      const expiring = await put("a", 1);
+      const deleted = await put("b");
+      await store.delete(deleted.id);
+      expect(store.resolveShortCode(expiring.shortCode!, NOW + 1_001)).toBeUndefined();
+      expect(store.resolveShortCode(deleted.shortCode!, NOW)).toBeUndefined();
+      expect(store.resolveShortCode("AAAAAAAAAA", NOW)).toBeUndefined();
+      expect(store.resolveShortCode("../etc", NOW)).toBeUndefined();
+    });
+
+    it("keeps codes across a restart", async () => {
+      const meta = await put("persist");
+      const reopened = await FileStore.open(dir);
+      expect(reopened.resolveShortCode(meta.shortCode!, NOW)?.id).toBe(meta.id);
+    });
+
+    it("gives files stored before short codes existed a code on load, and keeps it", async () => {
+      const id = "B".repeat(22);
+      await mkdir(join(dir, "files", id), { recursive: true });
+      await writeFile(join(dir, "files", id, "blob"), "old");
+      const legacy = { id, filename: "old.txt", contentType: "text/plain", size: 3, createdAt: NOW, expiresAt: NOW + 60_000 };
+      await writeFile(join(dir, "files", id, "meta.json"), JSON.stringify(legacy));
+
+      const first = (await FileStore.open(dir)).get(id, NOW);
+      expect(first?.shortCode).toMatch(/^[A-Za-z0-9]{10}$/);
+      const second = (await FileStore.open(dir)).get(id, NOW);
+      expect(second?.shortCode).toBe(first?.shortCode);
+    });
+  });
+
   it("opens a readable stream of the stored bytes", async () => {
     const meta = await put("stream me");
     const chunks: Buffer[] = [];
