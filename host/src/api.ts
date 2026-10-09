@@ -204,10 +204,14 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
   /** Handles an /api request (see isApiPath). */
   return async function handleApi(req: IncomingMessage, res: ServerResponse, pathname: string, method: string): Promise<void> {
     const ip = clientIp(req, config.trustCfConnectingIp);
-    const busy = limits.api.take(ip, now());
+    const signingUp = method === "POST" && pathname === "/api/tokens";
+    const who = signingUp ? undefined : authenticate(req);
+    // A valid token gets its own bucket on its IP, so a neighbour on the same NAT can't use it up;
+    // signups and requests without a valid token share the IP's bucket.
+    const bucket = !who ? ip : who.kind === "admin" ? `admin ${ip}` : `user ${who.id} ${ip}`;
+    const busy = limits.api.take(bucket, now());
     if (busy > 0) throw tooManyRequests("Too many requests; slow down", busy);
-    if (method === "POST" && pathname === "/api/tokens") return signup(req, res);
-    const who = authenticate(req);
+    if (signingUp) return signup(req, res);
     if (!who) {
       // The lockout only refuses wrong tokens, so a neighbour on the same IP or NAT can't lock out
       // valid ones. Guessing is still bounded by the per-IP api limit above, and tokens are 256-bit
