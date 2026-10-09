@@ -79,6 +79,23 @@ describe("request rate limits", () => {
     expect((await getConfig(ADMIN, "198.51.100.7")).status).toBe(200);
   });
 
+  it("doesn't let tokenless requests from a shared IP use up a valid token's API allowance", async () => {
+    await start({ apiRequestsPerIpPerMinute: 3 });
+    for (let i = 0; i < 3; i++) {
+      expect((await fetch(`${base}/api/config`, { headers: from("203.0.113.7") })).status).toBe(401);
+    }
+    expect((await getConfig(ADMIN, "203.0.113.7")).status).toBe(200);
+    expect((await getConfig(ADMIN, "198.51.100.7")).status).toBe(200);
+  });
+
+  it("doesn't let another token holder on a shared IP use up a valid token's API allowance", async () => {
+    await start({ apiRequestsPerIpPerMinute: 3 });
+    const { token } = (await (await fetch(`${base}/api/tokens`, { method: "POST", headers: from("192.0.2.9") })).json()) as { token: string };
+    for (let i = 0; i < 3; i++) expect((await getConfig(token, "203.0.113.7")).status).toBe(200);
+    expect((await getConfig(token, "203.0.113.7")).status).toBe(429);
+    expect((await getConfig(ADMIN, "203.0.113.7")).status).toBe(200);
+  });
+
   it("locks an IP out of wrong tokens, but never refuses a right one from it", async () => {
     await start({ authFailuresPerIpPerHour: 2 });
     expect((await getConfig("wrong")).status).toBe(401);
