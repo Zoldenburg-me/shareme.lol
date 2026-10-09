@@ -22,6 +22,12 @@ describe("renderMarkdownPage", () => {
     expect(page).not.toContain('href="javascript:');
   });
 
+  it("shows a small share-me banner linking home, next to View raw", () => {
+    const page = renderMarkdownPage("hi", "notes.md");
+    expect(page).toContain('<a href="?raw=1">View raw</a>');
+    expect(page).toMatch(/<a class="cta" href="\/">Shared with <b>share-me<\/b> · Get it for your agent →<\/a>/);
+  });
+
   it("escapes the filename in the title and header", () => {
     const page = renderMarkdownPage("hi", "<b>evil</b>.md");
     expect(page).toContain("<title>&lt;b&gt;evil&lt;/b&gt;.md</title>");

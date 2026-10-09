@@ -277,4 +277,41 @@ describe("host HTTP API", () => {
     expect((await fetch(`${base}/nope`)).status).toBe(404);
     expect((await fetch(`${base}/f/AAAAAAAAAAAAAAAAAAAAAA/x`)).status).toBe(404);
   });
+
+  it("shows a page, not JSON, for an unknown address on the site", async () => {
+    for (const path of ["/nope", "/about/team", "/f"]) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(res.headers.get("content-security-policy")).toMatch(/default-src 'none'/);
+      expect(await res.text()).toMatch(/Page not found/);
+    }
+    const head = await fetch(`${base}/nope`, { method: "HEAD" });
+    expect(head.status).toBe(404);
+    expect(await head.text()).toBe("");
+    // API clients and non-GET requests keep JSON errors.
+    for (const res of [await fetch(`${base}/api/nope`), await fetch(`${base}/nope`, { method: "POST" })]) {
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toBe("application/json");
+    }
+  });
+
+  it("shows a page, not JSON, for an expired or unknown link", async () => {
+    const { url } = await (await upload("a", { "x-ttl-seconds": "1" })).json();
+    clock += 2_000;
+    for (const path of [new URL(url).pathname, "/f/AAAAAAAAAAAAAAAAAAAAAA/x", "/f/not-an-id"]) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(res.headers.get("content-security-policy")).toMatch(/default-src 'none'/);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(await res.text()).toMatch(/This link has expired/);
+    }
+    const head = await fetch(`${base}/f/AAAAAAAAAAAAAAAAAAAAAA/x`, { method: "HEAD" });
+    expect(head.status).toBe(404);
+    expect(await head.text()).toBe("");
+    // The API keeps answering in JSON.
+    const api = await fetch(`${base}/api/files/AAAAAAAAAAAAAAAAAAAAAA`, { method: "DELETE", headers: AUTH });
+    expect(api.headers.get("content-type")).toBe("application/json");
+  });
 });

@@ -5,6 +5,7 @@ import { createApi, isApiPath, type Accounts } from "./api.js";
 import type { HostConfig } from "./config.js";
 import { clientIp, HttpError, sendJson, tooManyRequests } from "./http.js";
 import { FALLBACK_LANDING, type LegalPages } from "./landing.js";
+import { LINK_GONE_PAGE, NOT_FOUND_HEADERS, PAGE_NOT_FOUND_PAGE } from "./notFoundPage.js";
 import { createLimits } from "./limits.js";
 import { isRenderableMarkdown, renderMarkdownPage } from "./markdownView.js";
 import { renderSetupGuide } from "./setupGuide.js";
@@ -70,6 +71,11 @@ const LEGAL_PATHS: Readonly<Record<string, keyof LegalPages>> = {
   "/nutzungsbedingungen": "terms",
 };
 
+function sendNotFoundPage(res: ServerResponse, method: string, page: string): void {
+  res.writeHead(404, NOT_FOUND_HEADERS);
+  res.end(method === "HEAD" ? undefined : page);
+}
+
 export function createServer(
   config: HostConfig,
   store: FileStore,
@@ -91,7 +97,10 @@ export function createServer(
     const wait = limits.downloads.take(clientIp(req, config.trustCfConnectingIp), now());
     if (wait > 0) throw tooManyRequests("Too many downloads from your network; try again shortly", wait);
     const meta = store.get(id, now());
-    if (!meta) throw new HttpError(404, "Link not found or expired");
+    if (!meta) {
+      // People open these links in a browser, so a missing or expired one gets a page, not JSON.
+      return sendNotFoundPage(res, method, LINK_GONE_PAGE);
+    }
     if (!raw && isRenderableMarkdown(meta.contentType, meta.size)) return renderMarkdown(id, meta.filename, method, res);
     res.writeHead(200, {
       ...DOWNLOAD_HEADERS,
@@ -138,6 +147,10 @@ export function createServer(
     if ((method === "GET" || method === "HEAD") && fileMatch) return download(req, fileMatch[1], method, searchParams.has("raw"), res);
 
     if (isApiPath(pathname)) return handleApi(req, res, pathname, method);
+    // Browsers get a page for an unknown address; API clients and other methods keep JSON errors.
+    if ((method === "GET" || method === "HEAD") && !pathname.startsWith("/api/")) {
+      return sendNotFoundPage(res, method, PAGE_NOT_FOUND_PAGE);
+    }
     throw new HttpError(404, "Not found");
   }
 
