@@ -3,6 +3,8 @@ import { Readable } from "node:stream";
 export interface SharedLink {
   readonly id: string;
   readonly url: string;
+  /** Short /r/<code> link that redirects to `url`; absent from hosts without short links. */
+  readonly shortUrl?: string;
   readonly filename: string;
   readonly size: number;
   readonly expiresAt: string;

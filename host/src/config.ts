@@ -30,6 +30,8 @@ export interface HostConfig {
   readonly uploadsPerTokenPerHour: number;
   /** Downloads per client IP per minute. */
   readonly downloadsPerIpPerMinute: number;
+  /** Unknown or expired /r/<code> short links per client IP per hour, before the IP must wait. */
+  readonly shortLinkMissesPerIpPerHour: number;
   /** Live files (including uploads in progress) each self-service token may hold at once. */
   readonly maxFilesPerToken: number;
   /** Uploads one self-service token may have streaming at the same time. */
@@ -106,6 +108,7 @@ export function loadConfig(env: Env): HostConfig {
     authFailuresPerIpPerHour: positiveInt(env, "AUTH_FAILURES_PER_IP_PER_HOUR", 30),
     uploadsPerTokenPerHour: positiveInt(env, "UPLOADS_PER_TOKEN_PER_HOUR", 60),
     downloadsPerIpPerMinute: positiveInt(env, "DOWNLOADS_PER_IP_PER_MINUTE", 300),
+    shortLinkMissesPerIpPerHour: positiveInt(env, "SHORT_LINK_MISSES_PER_IP_PER_HOUR", 60),
     maxFilesPerToken: positiveInt(env, "MAX_FILES_PER_TOKEN", 200),
     concurrentUploadsPerToken: positiveInt(env, "MAX_CONCURRENT_UPLOADS_PER_TOKEN", 2),
     minUploadBytesPerSecond: positiveInt(env, "MIN_UPLOAD_BYTES_PER_SECOND", 1024),

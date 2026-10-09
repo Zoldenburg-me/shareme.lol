@@ -45,6 +45,7 @@ describe("agent → MCP → host → recipient", () => {
       authFailuresPerIpPerHour: 30,
       uploadsPerTokenPerHour: 60,
       downloadsPerIpPerMinute: 300,
+      shortLinkMissesPerIpPerHour: 60,
       maxFilesPerToken: 200,
       concurrentUploadsPerToken: 2,
       minUploadBytesPerSecond: 1024,
@@ -89,6 +90,10 @@ describe("agent → MCP → host → recipient", () => {
     const download = await fetch(`${base}${new URL(link.url).pathname}?raw=1`);
     expect(await download.text()).toBe("# Results\nAll green.");
     expect(download.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+
+    expect(link.shortUrl).toMatch(/^https:\/\/share\.example\.com\/r\/[A-Za-z0-9]{10}$/);
+    const viaShort = await fetch(`${base}${new URL(link.shortUrl).pathname}`, { redirect: "manual" });
+    expect(viaShort.headers.get("location")).toBe(new URL(link.url).pathname);
 
     const listed = await call("list_links");
     expect(listed.structuredContent.links.map((l: { id: string }) => l.id)).toEqual([link.id]);

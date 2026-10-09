@@ -9,12 +9,12 @@ agent ──share_file(path)──▶ share-me-mcp (your machine)
                          share-host (Akash Network)
                                │  stores file, auto-deletes at expiry
                                ▼
-               https://shareme.lol/f/<128-bit id>/report.html
+               https://shareme.lol/r/Xk3p9Qa2Lm  →  /f/<128-bit id>/report.html
 ```
 
 | Package | Runs on | What it does |
 |---|---|---|
-| [`host/`](host) | Akash Network (Docker), behind a Cloudflare Tunnel | Accepts authenticated uploads, serves files at `/f/<id>/<name>`, deletes them when their TTL expires |
+| [`host/`](host) | Akash Network (Docker), behind a Cloudflare Tunnel | Accepts authenticated uploads, serves files at `/f/<id>/<name>` with a short `/r/<code>` link that redirects there, deletes them when their TTL expires |
 | [`mcp/`](mcp) | Your machine (stdio) | MCP server exposing `share_file`, `list_links`, `revoke_link` to agents |
 
 ## MCP tools
@@ -169,6 +169,7 @@ npx -y share-me-mcp@0.1.0 login https://shareme.lol
 | `AUTH_FAILURES_PER_IP_PER_HOUR` | `30` | Wrong tokens per client IP before that IP is locked out of `/api` for the rest of the hour (valid tokens from it still work) |
 | `UPLOADS_PER_TOKEN_PER_HOUR` | `60` | Uploads per self-service token (the admin token is exempt) |
 | `DOWNLOADS_PER_IP_PER_MINUTE` | `300` | Link downloads per client IP |
+| `SHORT_LINK_MISSES_PER_IP_PER_HOUR` | `60` | Unknown or expired `/r/<code>` short links per client IP before it must wait |
 | `ALLOWED_EXTENSIONS` | all known types | Comma- or space-separated subset, e.g. `pdf,png,md`. Known types: `pdf html htm md txt log csv json xml docx xlsx pptx zip png jpg jpeg gif webp svg mp4 webm mp3 wav`. To add a type, add it to [`host/src/fileTypes.ts`](host/src/fileTypes.ts) with its content type and signature |
 | `SWEEP_INTERVAL_SECONDS` | `60` | How often expired files are deleted |
 | `DATA_DIR` / `PORT` | `/data` / `8080` | |

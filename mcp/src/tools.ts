@@ -21,7 +21,7 @@ const fail = (err: unknown): ToolResult => ({
   isError: true,
 });
 
-const describeLink = (l: SharedLink) => `${l.url}  (${l.filename}, ${l.size} bytes, expires ${l.expiresAt}, id ${l.id})`;
+const describeLink = (l: SharedLink) => `${l.shortUrl ?? l.url}  (${l.filename}, ${l.size} bytes, expires ${l.expiresAt}, id ${l.id})`;
 
 export const shareFileInput = {
   path: z.string().min(1).describe("Absolute path of the local file to share. Must be inside an allowed share directory."),
@@ -70,7 +70,8 @@ export function createShareTools(config: McpConfig, client: HostClient) {
         filename,
         ttlSeconds: Math.max(1, Math.round((args.ttl_hours ?? config.defaultTtlHours) * HOUR_SECONDS)),
       });
-      return ok(`Shareable link (auto-deletes at ${link.expiresAt}):\n${link.url}\n\nLink id: ${link.id}`, { ...link });
+      const links = link.shortUrl ? `${link.shortUrl}\n\nFull link: ${link.url}` : link.url;
+      return ok(`Shareable link (auto-deletes at ${link.expiresAt}):\n${links}\n\nLink id: ${link.id}`, { ...link });
     } catch (err) {
       return fail(err);
     } finally {

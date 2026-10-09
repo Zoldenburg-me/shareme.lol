@@ -1,7 +1,7 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pipeline } from "node:stream";
 import { text } from "node:stream/consumers";
-import { createApi, isApiPath, type Accounts } from "./api.js";
+import { createApi, filePath, isApiPath, type Accounts } from "./api.js";
 import type { HostConfig } from "./config.js";
 import { clientIp, HttpError, sendJson, tooManyRequests } from "./http.js";
 import { FALLBACK_LANDING, type LegalPages } from "./landing.js";
@@ -33,8 +33,12 @@ function encodeRfc5987(value: string): string {
   return encodeURIComponent(value).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-// File ids are bearer secrets: never write them to logs.
-const redactIds = (url: string | undefined) => (url ?? "").replace(/[A-Za-z0-9_-]{22}/g, "<id>");
+// File ids and short codes are bearer secrets: never write them to logs.
+const redactIds = (url: string | undefined) =>
+  (url ?? "").replace(/[A-Za-z0-9_-]{22}/g, "<id>").replace(/\/r\/[^/?#]+/g, "/r/<code>");
+
+// Temporary and uncached: the link stops working when the file expires or is revoked.
+const SHORT_LINK_HEADERS = { "cache-control": "no-store", "referrer-policy": "no-referrer" } as const;
 
 // The landing page is trusted, first-party HTML: own fonts, inline styles and scripts, no framing.
 const LANDING_HEADERS = {
@@ -115,6 +119,20 @@ export function createServer(
     });
   }
 
+  // Short codes are guessable in principle, so each IP gets a limited number of wrong ones.
+  function followShortLink(req: IncomingMessage, code: string, method: string, res: ServerResponse): void {
+    const ip = clientIp(req, config.trustCfConnectingIp);
+    const blocked = limits.shortLinkMisses.retryAfter(ip, now());
+    if (blocked > 0) throw tooManyRequests("Too many unknown links from your network; try again later", blocked);
+    const meta = store.resolveShortCode(code, now());
+    if (!meta) {
+      limits.shortLinkMisses.take(ip, now());
+      return sendNotFoundPage(res, method, LINK_GONE_PAGE);
+    }
+    res.writeHead(302, { ...SHORT_LINK_HEADERS, location: filePath(meta) });
+    res.end();
+  }
+
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const { pathname, searchParams } = new URL(req.url ?? "/", "http://localhost");
     const method = req.method ?? "GET";
@@ -145,6 +163,9 @@ export function createServer(
 
     const fileMatch = /^\/f\/([^/]+)(?:\/[^/]*)?$/.exec(pathname);
     if ((method === "GET" || method === "HEAD") && fileMatch) return download(req, fileMatch[1], method, searchParams.has("raw"), res);
+
+    const shortMatch = /^\/r\/([^/]+)$/.exec(pathname);
+    if ((method === "GET" || method === "HEAD") && shortMatch) return followShortLink(req, shortMatch[1], method, res);
 
     if (isApiPath(pathname)) return handleApi(req, res, pathname, method);
     // Browsers get a page for an unknown address; API clients and other methods keep JSON errors.

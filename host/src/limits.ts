@@ -10,6 +10,7 @@ export interface Limits {
   readonly authFailures: RateLimiter;
   readonly uploads: RateLimiter;
   readonly downloads: RateLimiter;
+  readonly shortLinkMisses: RateLimiter;
 }
 
 export function createLimits(config: HostConfig): Limits {
@@ -18,5 +19,6 @@ export function createLimits(config: HostConfig): Limits {
     authFailures: new RateLimiter(config.authFailuresPerIpPerHour, HOUR_MS),
     uploads: new RateLimiter(config.uploadsPerTokenPerHour, HOUR_MS),
     downloads: new RateLimiter(config.downloadsPerIpPerMinute, MINUTE_MS),
+    shortLinkMisses: new RateLimiter(config.shortLinkMissesPerIpPerHour, HOUR_MS),
   };
 }
