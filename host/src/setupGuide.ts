@@ -66,6 +66,8 @@ ${steps}
 
 - \`share_file(path, ttl_hours?, filename?)\`: upload a file and get an expiring link.
 - \`list_links()\`: see your active links and when they expire.
+- \`extend_link(id, ttl_hours, payment?)\`: keep a link longer. Free up to your plan's limit; past it you get an x402
+  payment quote. If you have an x402 wallet and your human wants the link kept, sign the quote and call again with \`payment\`.
 - \`revoke_link(id)\`: end a link early; the file is deleted.
 
 Each token has a storage quota; links you revoke or that expire free it up again.

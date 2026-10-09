@@ -23,14 +23,29 @@ agent ──share_file(path)──▶ share-me-mcp (your machine)
 |---|---|---|
 | `share_file` | `path` (absolute), `ttl_hours?`, `filename?` | Public URL, expiry, link id. Disallowed file types are refused before uploading |
 | `list_links` | none | All active links |
+| `extend_link` | `id`, `ttl_hours`, `payment?` | Keeps a link until `ttl_hours` from now. Free up to the plan's limit; past it the host answers with an x402 payment quote, which the agent's wallet signs and passes back as `payment` |
 | `revoke_link` | `id` | Link stops working and the file is deleted immediately |
+
+## Plans and paid retention
+
+Each self-service token is on the **free** plan (`MAX_TTL_SECONDS`, `TOKEN_QUOTA_MB`, `MAX_FILES_PER_TOKEN`) or **Pro** (`PRO_*`). For now the admin sets plans: `PUT /api/tokens/<id>/plan` with `{"until": "<ISO date>"}`, or `{"until": null}` to end one. When an upload asks for more than the plan allows, the response says so (`ttlCapped`, `requestedTtlSeconds`, `maxTtlSeconds`).
+
+`POST /api/files/<id>/extend` with `{"ttlSeconds": n}` keeps a link longer, counting from now; links are never shortened. Up to the plan's limit (counted from upload) it's free. Past it, if the host takes payments, each started 30 days costs `X402_PRICE_PER_FILE_MONTH` + `X402_PRICE_PER_GB_MONTH` × size, paid with [x402 v2](https://github.com/x402-foundation/x402):
+
+1. Without payment the host answers `402` with a `PAYMENT-REQUIRED` header (and the same quote, plus a readable `price`, in the body).
+2. The client retries with `PAYMENT-SIGNATURE`: the agent's wallet signs an EIP-3009 USDC transfer for exactly that quote.
+3. The host asks the facilitator to verify it, extends the link, then settles. If settlement definitely fails, the extension is undone. Settled payments go to `<DATA_DIR>/payments.jsonl` (file `0600`; files appear as a 16-hex `fileRef`, the start of sha256 of the file id, never the id itself) and come back in `PAYMENT-RESPONSE`. If the facilitator gives no clear answer (timeout, malformed reply), the money may already have moved, so the extension stands, the response says `"paymentStatus": "pending"`, and the ledger gets a `pending` entry with the payment's EIP-3009 nonce to reconcile by hand.
+
+One signed payment can't be used for two extensions at once, and at most 8 payments are checked at a time. Paid time ends on the hour, so a quote still holds while the agent's wallet signs it.
+
+The facilitator is any service that speaks the x402 facilitator API (`POST /verify`, `POST /settle`): Coinbase's, or your own payment orchestrator. The quote's resource URL is the generic `/api/files/extend`, so link ids never reach it.
 
 ## Security model
 
 **Threat model:** the allowlist, denylist and secret scan stop agents from *accidentally* (or via a careless prompt injection) sharing the wrong file. They are **not** a sandbox. An agent that also has a shell can copy any file into an allowed dir, or read `SHARE_API_TOKEN` from the MCP config and call the host directly. If you run agents that may be fully hostile, run the MCP server as a separate OS user and keep its config `0600`.
 
 - **Links** carry a random 128-bit id. Anyone who has the link can open it until it expires or is revoked.
-- **Auto-delete:** each file has a TTL. The default is 24 h; the host caps it at `MAX_TTL_SECONDS` (default 7 days). A sweeper deletes expired files every minute, and expired links return 404 straight away.
+- **Auto-delete:** each file has a TTL. The default is 24 h; the token's plan caps it (free: `MAX_TTL_SECONDS`, default 7 days; Pro: `PRO_MAX_TTL_SECONDS`), and a link can be extended past that only by paying (see [Plans and paid retention](#plans-and-paid-retention)). A sweeper deletes expired files every minute, and expired links return 404 straight away.
 - **Path allowlist:** the MCP server only shares files under `SHARE_ALLOWED_DIRS`. Symlinks are resolved and hard links are rejected. The file is opened once and its identity re-verified, then uploaded from that handle, so it can't be swapped after the check. Credential-looking paths (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `credentials*`, `*.tfstate`, `.ssh/`, `.aws/`, `.git/`, `.config/`, …) are refused even inside an allowed dir.
 - **Secret scan:** before upload, file contents are scanned for private keys and AWS, GitHub, Anthropic, OpenAI, Slack and Google API keys. A match blocks the share.
 - **File types:** only allowlisted extensions can be shared (default list below, narrow it with `ALLOWED_EXTENSIONS`). The host checks each file's leading bytes against its extension, so a binary renamed to `report.pdf` is rejected. Text types must not contain NUL bytes. The host sets `Content-Type` from the extension and ignores the uploader's header. Executables, scripts and archives other than `.zip` are never served.
@@ -155,7 +170,7 @@ npx -y share-me-mcp@0.1.0 login https://shareme.lol
 | `SHARE_API_TOKEN` | required | ≥ 32 chars |
 | `PUBLIC_BASE_URL` | required | Base for returned links |
 | `DEFAULT_TTL_SECONDS` | `86400` | Used when the agent doesn't pass `ttl_hours` |
-| `MAX_TTL_SECONDS` | `604800` | Hard cap on any TTL |
+| `MAX_TTL_SECONDS` | `604800` | Longest TTL on the free plan |
 | `MAX_FILE_MB` | `100` | Upload size limit. Keep it under Cloudflare's 100 MB request limit (the SDL uses `95`) |
 | `MAX_TOTAL_MB` | `9216` | Storage quota across all live files. Keep it below the volume size |
 | `OPEN_SIGNUP` | off | `1` lets anyone get a self-service token at `POST /api/tokens` |
@@ -171,6 +186,14 @@ npx -y share-me-mcp@0.1.0 login https://shareme.lol
 | `DOWNLOADS_PER_IP_PER_MINUTE` | `300` | Link downloads per client IP |
 | `SHORT_LINK_MISSES_PER_IP_PER_HOUR` | `60` | Unknown or expired `/r/<code>` short links per client IP before it must wait |
 | `ALLOWED_EXTENSIONS` | all known types | Comma- or space-separated subset, e.g. `pdf,png,md`. Known types: `pdf html htm md txt log csv json xml docx xlsx pptx zip png jpg jpeg gif webp svg mp4 webm mp3 wav`. To add a type, add it to [`host/src/fileTypes.ts`](host/src/fileTypes.ts) with its content type and signature |
+| `PRO_MAX_TTL_SECONDS` / `PRO_QUOTA_MB` / `PRO_MAX_FILES` | `7776000` / `5120` / `2000` | Limits for tokens on the Pro plan |
+| `X402_PAY_TO` | off | Address that receives payments. Setting it turns on paid extensions |
+| `X402_FACILITATOR_URL` | required with `X402_PAY_TO` | Base URL of the x402 facilitator (`/verify`, `/settle` are appended) |
+| `X402_FACILITATOR_AUTH` | none | Sent as `Authorization` to the facilitator |
+| `X402_NETWORK` | `eip155:8453` | CAIP-2 chain id. USDC is known on Base (`eip155:8453`) and Base Sepolia (`eip155:84532`); elsewhere set `X402_ASSET`, `X402_ASSET_NAME`, `X402_ASSET_VERSION` (its EIP-712 domain), `X402_ASSET_DECIMALS`, `X402_ASSET_SYMBOL` |
+| `X402_PRICE_PER_FILE_MONTH` / `X402_PRICE_PER_GB_MONTH` | `10000` / `20000` | Atomic units per started 30 days (USDC has 6 decimals, so $0.01 and $0.02) |
+| `X402_MAX_LIFETIME_SECONDS` | `31536000` | Longest a link may live in total, paid time included |
+| `X402_MAX_TIMEOUT_SECONDS` | `120` | How long a signed payment stays usable |
 | `SWEEP_INTERVAL_SECONDS` | `60` | How often expired files are deleted |
 | `DATA_DIR` / `PORT` | `/data` / `8080` | |
 
@@ -182,6 +205,7 @@ npx -y share-me-mcp@0.1.0 login https://shareme.lol
 | `SHARE_API_TOKEN` | from `signup`/`login` | A self-service token or the host's admin token |
 | `SHARE_ALLOWED_DIRS` | `~/agent-output` | Absolute dirs, separated by `:` (`;` on Windows) |
 | `SHARE_DEFAULT_TTL_HOURS` | `24` | |
+| `SHARE_MAX_PAYMENT_ATOMIC` | `1000000` | Most `extend_link` will pass on for one payment, in atomic units ($1 in USDC). Quotes over it, or paying another address than the host advertises, are refused |
 | `SHARE_MAX_FILE_MB` | `100` | Checked locally before uploading |
 | `SHARE_ALLOW_INSECURE_HTTP` | unset | `1` allows plain http to a remote host (not recommended) |
 

@@ -41,7 +41,7 @@ describe("renderSetupGuide", () => {
   });
 
   it("documents the three tools and the per-token quota", () => {
-    for (const tool of ["share_file", "list_links", "revoke_link"]) expect(guide).toContain(tool);
+    for (const tool of ["share_file", "list_links", "extend_link", "revoke_link"]) expect(guide).toContain(tool);
     expect(guide).toMatch(/quota/i);
   });
 });

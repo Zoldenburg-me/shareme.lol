@@ -1,4 +1,6 @@
 import { parseAllowedExtensions } from "./fileTypes.js";
+import type { PlanLimits } from "./plans.js";
+import { loadX402Config, type X402Config } from "./x402Config.js";
 
 export interface HostConfig {
   readonly apiToken: string;
@@ -39,15 +41,19 @@ export interface HostConfig {
   /** An upload that brings fewer bytes than this per second over one pace window is aborted (408). */
   readonly minUploadBytesPerSecond: number;
   readonly uploadPaceWindowMs: number;
+  /** Limits for tokens on the paid plan; without it, Pro tokens get the free limits. */
+  readonly pro?: PlanLimits;
+  /** Paid link extensions over x402; off unless X402_PAY_TO is set. */
+  readonly x402?: X402Config;
 }
 
 const MIN_TOKEN_LENGTH = 32;
 const DAY_SECONDS = 86_400;
 const MEBIBYTE = 1024 * 1024;
 
-type Env = Record<string, string | undefined>;
+export type Env = Record<string, string | undefined>;
 
-function positiveInt(env: Env, name: string, fallback: number): number {
+export function positiveInt(env: Env, name: string, fallback: number): number {
   const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
   const value = Number(raw);
@@ -80,12 +86,23 @@ function requireBaseUrl(env: Env): string {
   return url.href.replace(/\/+$/, "");
 }
 
+function loadProLimits(env: Env, maxTtlSeconds: number): PlanLimits {
+  const pro = {
+    maxTtlSeconds: positiveInt(env, "PRO_MAX_TTL_SECONDS", 90 * DAY_SECONDS),
+    quotaBytes: positiveInt(env, "PRO_QUOTA_MB", 5 * 1024) * MEBIBYTE,
+    maxFiles: positiveInt(env, "PRO_MAX_FILES", 2000),
+  };
+  if (pro.maxTtlSeconds < maxTtlSeconds) throw new Error("PRO_MAX_TTL_SECONDS must not be below MAX_TTL_SECONDS");
+  return pro;
+}
+
 export function loadConfig(env: Env): HostConfig {
   const defaultTtlSeconds = positiveInt(env, "DEFAULT_TTL_SECONDS", DAY_SECONDS);
   const maxTtlSeconds = positiveInt(env, "MAX_TTL_SECONDS", 7 * DAY_SECONDS);
   if (defaultTtlSeconds > maxTtlSeconds) {
     throw new Error("DEFAULT_TTL_SECONDS must not exceed MAX_TTL_SECONDS");
   }
+  const x402 = loadX402Config(env);
   return {
     apiToken: requireToken(env),
     publicBaseUrl: requireBaseUrl(env),
@@ -113,5 +130,7 @@ export function loadConfig(env: Env): HostConfig {
     concurrentUploadsPerToken: positiveInt(env, "MAX_CONCURRENT_UPLOADS_PER_TOKEN", 2),
     minUploadBytesPerSecond: positiveInt(env, "MIN_UPLOAD_BYTES_PER_SECOND", 1024),
     uploadPaceWindowMs: positiveInt(env, "UPLOAD_PACE_WINDOW_SECONDS", 10) * 1000,
+    pro: loadProLimits(env, maxTtlSeconds),
+    ...(x402 ? { x402 } : {}),
   };
 }

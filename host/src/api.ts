@@ -2,9 +2,11 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HostConfig } from "./config.js";
 import { checkContent, contentTypeOf, extensionOf, HEAD_BYTES } from "./fileTypes.js";
-import { clientIp, HttpError, sendJson, tooManyRequests } from "./http.js";
+import { createExtender, type Payments } from "./extend.js";
+import { clientIp, HttpError, readJson, sendJson, tooManyRequests } from "./http.js";
 import { peek } from "./peek.js";
 import type { Limits } from "./limits.js";
+import { limitsFor, planOf, type Principal } from "./plans.js";
 import { Reservations } from "./reservations.js";
 import { paceUpload } from "./uploadPace.js";
 import type { SignupLimiter } from "./signupLimiter.js";
@@ -17,13 +19,11 @@ export interface Accounts {
   readonly limiter: SignupLimiter;
 }
 
-/** The admin token (SHARE_API_TOKEN) sees everything; a self-service token sees only its own files. */
-type Principal = { readonly kind: "admin" } | { readonly kind: "user"; readonly id: string };
-
 type Clock = () => number;
 
 const MAX_FILENAME_LENGTH = 255;
 const MEBIBYTE = 1024 * 1024;
+const MAX_PLAN_BODY_BYTES = 1024;
 const NO_STORE = { "cache-control": "no-store" };
 // Suggested wait when a token already has its maximum number of uploads streaming.
 const UPLOAD_BUSY_RETRY_MS = 5_000;
@@ -45,12 +45,23 @@ function parseFilename(req: IncomingMessage): string {
   return name;
 }
 
-function parseTtl(req: IncomingMessage, config: HostConfig): number {
+/** The requested TTL, and what the plan allows of it. */
+function parseTtl(req: IncomingMessage, config: HostConfig, maxTtlSeconds: number): { requested: number; ttl: number } {
   const raw = req.headers["x-ttl-seconds"];
-  if (raw === undefined || raw === "") return config.defaultTtlSeconds;
-  const ttl = Number(raw);
-  if (!Number.isInteger(ttl) || ttl <= 0) throw new HttpError(400, "x-ttl-seconds must be a positive integer");
-  return Math.min(ttl, config.maxTtlSeconds);
+  if (raw === undefined || raw === "") return { requested: config.defaultTtlSeconds, ttl: Math.min(config.defaultTtlSeconds, maxTtlSeconds) };
+  const requested = Number(raw);
+  if (!Number.isInteger(requested) || requested <= 0) throw new HttpError(400, "x-ttl-seconds must be a positive integer");
+  return { requested, ttl: Math.min(requested, maxTtlSeconds) };
+}
+
+// Plan changes are admin-only for now; a payment flow will call the same TokenStore.setPlan.
+async function parsePlanUntil(req: IncomingMessage): Promise<number | undefined> {
+  const body = await readJson(req, MAX_PLAN_BODY_BYTES);
+  const until = typeof body === "object" && body !== null ? (body as { until?: unknown }).until : undefined;
+  if (until === null) return undefined;
+  const at = typeof until === "string" ? Date.parse(until) : NaN;
+  if (Number.isNaN(at)) throw new HttpError(400, "until must be an ISO date, or null to end the plan");
+  return at;
 }
 
 /** The extension decides how the file is served; the uploader's Content-Type is ignored. */
@@ -79,15 +90,19 @@ export function isApiPath(pathname: string): boolean {
     pathname === "/api/tokens" || pathname.startsWith("/api/tokens/");
 }
 
-export function createApi(config: HostConfig, store: FileStore, now: Clock, limits: Limits, accounts?: Accounts) {
+export function createApi(config: HostConfig, store: FileStore, now: Clock, limits: Limits, accounts?: Accounts, payments?: Payments) {
   const reservations = new Reservations();
+  const extend = createExtender(config, store, now, payments);
 
   function authenticate(req: IncomingMessage): Principal | undefined {
     const match = /^Bearer (.+)$/.exec(req.headers.authorization ?? "");
     if (!match) return undefined;
-    if (timingSafeEqual(sha256(match[1]), sha256(config.apiToken))) return { kind: "admin" };
+    // The operator gets the best plan the host has; quotas don't apply to it.
+    if (timingSafeEqual(sha256(match[1]), sha256(config.apiToken))) return { kind: "admin", limits: limitsFor(config, "pro") };
     const record = accounts?.tokens.find(match[1]);
-    return record ? { kind: "user", id: record.id } : undefined;
+    if (!record) return undefined;
+    const plan = planOf(record, now());
+    return { kind: "user", id: record.id, plan, limits: limitsFor(config, plan) };
   }
 
   async function signup(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -129,16 +144,17 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
     // the same free space between the check and the hold.
     const hostRemaining = config.maxTotalBytes - store.totalBytes() - reservations.totalBytes();
     if (declared > hostRemaining || hostRemaining <= 0) throw new HttpError(507, "Share host storage is full; try again later");
-    const ownerRemaining = owner ? config.tokenQuotaBytes - store.usedBytes(owner) - reservations.ownerBytes(owner) : Infinity;
+    const { quotaBytes, maxFiles, maxTtlSeconds } = who.limits;
+    const ownerRemaining = owner ? quotaBytes - store.usedBytes(owner) - reservations.ownerBytes(owner) : Infinity;
     if (declared > ownerRemaining || ownerRemaining <= 0) {
-      throw new HttpError(507, `Your storage quota (${megabytes(config.tokenQuotaBytes)}) is used up; revoke links or wait for them to expire`);
+      throw new HttpError(507, `Your storage quota (${megabytes(quotaBytes)}) is used up; revoke links or wait for them to expire`);
     }
-    if (owner && store.fileCount(owner) + reservations.ownerFiles(owner) >= config.maxFilesPerToken) {
-      throw new HttpError(507, `You already have ${config.maxFilesPerToken} files shared; revoke links or wait for them to expire`);
+    if (owner && store.fileCount(owner) + reservations.ownerFiles(owner) >= maxFiles) {
+      throw new HttpError(507, `You already have ${maxFiles} files shared; revoke links or wait for them to expire`);
     }
     const filename = parseFilename(req);
     const ext = requireAllowedExtension(filename, config.allowedExtensions);
-    const ttlSeconds = parseTtl(req, config);
+    const { requested, ttl: ttlSeconds } = parseTtl(req, config, maxTtlSeconds);
     // A declared length is all the body can be; without one, hold everything this upload may use.
     const maxBytes = hasLength ? declared : Math.min(config.maxFileBytes, hostRemaining, ownerRemaining);
     const release = reservations.hold(maxBytes, owner);
@@ -152,7 +168,9 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
         discard();
         throw new HttpError(415, mismatch);
       }
-      return await finishUpload(res, who, await store.create({
+      // Say so when the plan cut the TTL short, so the agent can extend (or pay for) the rest.
+      const capped = requested > ttlSeconds ? { ttlCapped: true, requestedTtlSeconds: requested, maxTtlSeconds } : {};
+      return await finishUpload(res, who, capped, await store.create({
         filename,
         contentType: contentTypeOf(ext),
         ttlSeconds,
@@ -167,21 +185,48 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
     }
   }
 
-  async function finishUpload(res: ServerResponse, who: Principal, meta: FileMeta): Promise<void> {
+  async function finishUpload(res: ServerResponse, who: Principal, extra: Record<string, unknown>, meta: FileMeta): Promise<void> {
     // The token may have been revoked while the body was streaming; its cascade has already run.
     if (who.kind === "user" && !accounts?.tokens.hasId(who.id)) {
       await store.delete(meta.id);
       throw new HttpError(401, "Token was revoked during the upload");
     }
-    sendJson(res, 201, toPublic(meta, config.publicBaseUrl));
+    sendJson(res, 201, { ...toPublic(meta, config.publicBaseUrl), ...extra });
+  }
+
+  function planUntil(id: string): { planUntil?: string } {
+    const until = accounts?.tokens.byId(id)?.plan?.until;
+    return until && until > now() ? { planUntil: new Date(until).toISOString() } : {};
+  }
+
+  function paymentTerms() {
+    const x402 = config.x402;
+    if (!x402 || !payments) return {};
+    const { network, asset, assetSymbol: currency, payTo, pricePerFileMonth, pricePerGbMonth, maxLifetimeSeconds } = x402;
+    return { payments: { x402: { network, asset, currency, payTo, pricePerFileMonth, pricePerGbMonth, maxLifetimeSeconds } } };
   }
 
   function policy(who: Principal) {
-    const { allowedExtensions, maxFileBytes, maxTtlSeconds } = config;
+    const { allowedExtensions, maxFileBytes } = config;
     const account = who.kind === "user"
-      ? { account: { id: who.id, usedBytes: store.usedBytes(who.id), quotaBytes: config.tokenQuotaBytes } }
+      ? { account: { id: who.id, plan: who.plan, ...planUntil(who.id), usedBytes: store.usedBytes(who.id), quotaBytes: who.limits.quotaBytes } }
       : {};
-    return { allowedExtensions, maxFileBytes, maxTtlSeconds, ...account };
+    return { allowedExtensions, maxFileBytes, maxTtlSeconds: who.limits.maxTtlSeconds, ...account, ...paymentTerms() };
+  }
+
+  async function extendFile(req: IncomingMessage, res: ServerResponse, id: string, who: Principal): Promise<void> {
+    const { meta, headers, paymentPending } = await extend(req, id, who);
+    const pending = paymentPending ? { paymentStatus: "pending" } : {};
+    sendJson(res, 200, { ...toPublic(meta, config.publicBaseUrl), ...pending }, { ...NO_STORE, ...headers });
+  }
+
+  async function setPlan(req: IncomingMessage, res: ServerResponse, id: string, who: Principal): Promise<void> {
+    if (who.kind !== "admin") throw new HttpError(403, "Only the host admin can change plans");
+    if (!accounts) throw new HttpError(404, "Not found");
+    const until = await parsePlanUntil(req);
+    const record = await accounts.tokens.setPlan(id, until);
+    if (!record) throw new HttpError(404, "Token not found");
+    sendJson(res, 200, planOf(record, now()) === "pro" ? { id, plan: "pro", ...planUntil(id) } : { id, plan: "free" });
   }
 
   async function deleteFile(id: string, who: Principal, res: ServerResponse): Promise<void> {
@@ -231,8 +276,12 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
     }
     const fileId = /^\/api\/files\/([^/]+)$/.exec(pathname)?.[1];
     if (method === "DELETE" && fileId) return deleteFile(fileId, who, res);
+    const extendId = /^\/api\/files\/([^/]+)\/extend$/.exec(pathname)?.[1];
+    if (method === "POST" && extendId) return extendFile(req, res, extendId, who);
     const tokenId = /^\/api\/tokens\/([^/]+)$/.exec(pathname)?.[1];
     if (method === "DELETE" && tokenId) return deleteToken(tokenId, who, res);
+    const planId = /^\/api\/tokens\/([^/]+)\/plan$/.exec(pathname)?.[1];
+    if (method === "PUT" && planId) return setPlan(req, res, planId, who);
     throw new HttpError(404, "Not found");
   };
 }

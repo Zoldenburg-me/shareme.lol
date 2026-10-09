@@ -188,3 +188,36 @@ describe("FileStore", () => {
     expect(Buffer.concat(chunks).toString()).toBe("stream me");
   });
 });
+
+describe("FileStore.setExpiry", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "share-expiry-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("moves a file's expiry and keeps it across a restart", async () => {
+    const store = await FileStore.open(dir);
+    const meta = await store.create({ filename: "a.txt", contentType: "text/plain", ttlSeconds: 60, maxBytes: 10, body: Readable.from(["hi"]), clock: () => 1000 });
+    const updated = await store.setExpiry(meta.id, 999_000, 1000);
+    expect(updated).toEqual({ ...meta, expiresAt: 999_000 });
+    expect(store.get(meta.id, 500_000)).toEqual(updated);
+    expect((await FileStore.open(dir)).get(meta.id, 500_000)?.expiresAt).toBe(999_000);
+  });
+
+  it("returns undefined for a file that is gone", async () => {
+    const store = await FileStore.open(dir);
+    expect(await store.setExpiry("A".repeat(22), 1, 0)).toBeUndefined();
+    expect(await store.setExpiry("bad", 1, 0)).toBeUndefined();
+  });
+
+  it("won't revive a file that has already expired", async () => {
+    const store = await FileStore.open(dir);
+    const meta = await store.create({ filename: "a.txt", contentType: "text/plain", ttlSeconds: 60, maxBytes: 10, body: Readable.from(["hi"]), clock: () => 1000 });
+    expect(await store.setExpiry(meta.id, 999_000, meta.expiresAt)).toBeUndefined();
+  });
+});
