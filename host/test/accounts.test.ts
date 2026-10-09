@@ -101,7 +101,7 @@ describe("self-service accounts", () => {
     expect(over.status).toBe(507);
     expect((await over.json()).error).toMatch(/quota/i);
     const cfg = await (await fetch(`${base}/api/config`, { headers: bearer(token) })).json();
-    expect(cfg.account).toEqual({ id, usedBytes: 8, quotaBytes: 10 });
+    expect(cfg.account).toEqual({ id, plan: "free", usedBytes: 8, quotaBytes: 10 });
   });
 
   it("lets the admin revoke a token, deleting its files", async () => {

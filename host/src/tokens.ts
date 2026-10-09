@@ -7,6 +7,8 @@ export interface TokenRecord {
   readonly id: string;
   readonly hash: string;
   readonly createdAt: number;
+  /** A paid plan and when it lapses; absent for free tokens. */
+  readonly plan?: { readonly name: "pro"; readonly until: number };
 }
 
 const TOKEN_PREFIX = "sm_";
@@ -42,6 +44,10 @@ export class TokenStore {
     return this.records.get(hashToken(token));
   }
 
+  byId(id: string): TokenRecord | undefined {
+    return [...this.records.values()].find((r) => r.id === id);
+  }
+
   hasId(id: string): boolean {
     return [...this.records.values()].some((r) => r.id === id);
   }
@@ -65,6 +71,19 @@ export class TokenStore {
       return next;
     });
     return removed;
+  }
+
+  /** Give a token Pro until `until` (ms), or back to free with undefined. Undefined if the token is unknown. */
+  async setPlan(id: string, until: number | undefined): Promise<TokenRecord | undefined> {
+    let updated: TokenRecord | undefined;
+    await this.mutate((current) => {
+      const record = [...current.values()].find((r) => r.id === id);
+      if (!record) return current;
+      const { plan: _previous, ...rest } = record;
+      updated = until === undefined ? rest : { ...rest, plan: { name: "pro", until } };
+      return new Map([...current, [record.hash, updated]]);
+    });
+    return updated;
   }
 
   private mutate(change: (current: ReadonlyMap<string, TokenRecord>) => ReadonlyMap<string, TokenRecord>): Promise<void> {

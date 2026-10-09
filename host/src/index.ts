@@ -8,6 +8,8 @@ import { renderSetupGuide } from "./setupGuide.js";
 import { SignupLimiter } from "./signupLimiter.js";
 import { FileStore } from "./store.js";
 import { TokenStore } from "./tokens.js";
+import { PaymentLedger } from "./payments.js";
+import { httpFacilitator } from "./x402.js";
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
@@ -23,7 +25,11 @@ async function main(): Promise<void> {
   }, {
     tokens,
     limiter: new SignupLimiter(config.signupsPerIpPerHour, config.signupsPerDay),
+  }, config.x402 && {
+    facilitator: httpFacilitator(config.x402.facilitatorUrl, config.x402.facilitatorAuth),
+    ledger: new PaymentLedger(config.dataDir),
   });
+  if (config.x402) console.log(`[share-host] taking x402 payments on ${config.x402.network} via ${new URL(config.x402.facilitatorUrl).host}`);
 
   const sweep = async () => {
     try {

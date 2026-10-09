@@ -201,6 +201,22 @@ export class FileStore {
     return [...this.index.values()].reduce((sum, m) => sum + m.size, 0);
   }
 
+  /** Move a live file's expiry; undefined if the file is gone or already expired at `now`. */
+  async setExpiry(id: string, expiresAt: number, now: number): Promise<FileMeta | undefined> {
+    const meta = this.get(id, now);
+    if (!meta) return undefined;
+    const updated: FileMeta = { ...meta, expiresAt };
+    try {
+      await this.writeMeta(updated);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw err;
+    }
+    if (!this.index.has(id)) return undefined;
+    this.remember(updated);
+    return updated;
+  }
+
   openBlob(id: string): Readable {
     if (!isValidId(id)) throw new Error(`Invalid id: ${id}`);
     return createReadStream(join(this.filesDir, id, BLOB));

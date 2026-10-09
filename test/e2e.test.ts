@@ -74,9 +74,23 @@ describe("agent → MCP → host → recipient", () => {
   const call = (name: string, args: Record<string, unknown> = {}) =>
     client.callTool({ name, arguments: args }) as Promise<{ isError?: boolean; content: { text: string }[]; structuredContent?: any }>;
 
-  it("exposes the three tools", async () => {
+  it("exposes the four tools", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["list_links", "revoke_link", "share_file"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["extend_link", "list_links", "revoke_link", "share_file"]);
+  });
+
+  it("says when a TTL was capped, extends within the limit, and refuses past it on a host that sells nothing", async () => {
+    const shared = await call("share_file", { path: join(outDir, "summary.md"), ttl_hours: 48 });
+    expect(shared.content[0].text).toMatch(/capped this link at 1 day \(you asked for 2 days\)/);
+    const { id } = shared.structuredContent;
+
+    const extended = await call("extend_link", { id, ttl_hours: 20 });
+    expect(extended.isError).toBeFalsy();
+    expect(extended.content[0].text).toMatch(/now expires at/);
+
+    const tooLong = await call("extend_link", { id, ttl_hours: 48 });
+    expect(tooLong.isError).toBe(true);
+    expect(tooLong.content[0].text).toMatch(/403.*doesn't sell longer ones/);
   });
 
   it("shares a file, lets a recipient download it, lists it, then revokes it", async () => {

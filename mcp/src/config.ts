@@ -7,6 +7,8 @@ export interface McpConfig {
   readonly allowedDirs: readonly string[];
   readonly defaultTtlHours: number;
   readonly maxFileBytes: number;
+  /** Most one payment may be, in the asset's atomic units (USDC: 1000000 = $1); see tools.ts for the default. */
+  readonly maxPaymentAtomic?: number;
 }
 
 /** Host and token saved by `share-me-mcp login`. */
@@ -84,5 +86,6 @@ export function loadMcpConfig(env: Env, stored?: StoredLogin, home: string = hom
     allowedDirs: allowedDirs(env, home),
     defaultTtlHours: positiveNumber(env, "SHARE_DEFAULT_TTL_HOURS", 24),
     maxFileBytes: positiveNumber(env, "SHARE_MAX_FILE_MB", 100) * MEBIBYTE,
+    ...(env.SHARE_MAX_PAYMENT_ATOMIC ? { maxPaymentAtomic: Math.floor(positiveNumber(env, "SHARE_MAX_PAYMENT_ATOMIC", 0)) } : {}),
   };
 }

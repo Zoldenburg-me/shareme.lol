@@ -2,6 +2,7 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { pipeline } from "node:stream";
 import { text } from "node:stream/consumers";
 import { createApi, filePath, isApiPath, type Accounts } from "./api.js";
+import type { Payments } from "./extend.js";
 import type { HostConfig } from "./config.js";
 import { clientIp, HttpError, sendJson, tooManyRequests } from "./http.js";
 import { FALLBACK_LANDING, type LegalPages } from "./landing.js";
@@ -86,9 +87,10 @@ export function createServer(
   now: Clock = Date.now,
   pages: Pages = { landing: FALLBACK_LANDING, setup: renderSetupGuide(config.publicBaseUrl) },
   accounts?: Accounts,
+  payments?: Payments,
 ): Server {
   const limits = createLimits(config);
-  const handleApi = createApi(config, store, now, limits, accounts);
+  const handleApi = createApi(config, store, now, limits, accounts, payments);
 
   // Markdown is shown rendered (still under the sandbox CSP); ?raw serves the original file.
   async function renderMarkdown(id: string, filename: string, method: string, res: ServerResponse): Promise<void> {
@@ -186,7 +188,8 @@ export function createServer(
       if (declared > config.maxFileBytes) res.setHeader("connection", "close");
       else if (!req.readableEnded && !req.destroyed) req.resume();
       const headers = err instanceof HttpError ? err.headers : {};
-      sendJson(res, status, { error: status === 500 ? "Internal server error" : (err as Error).message }, headers);
+      const details = err instanceof HttpError ? err.details : {};
+      sendJson(res, status, { error: status === 500 ? "Internal server error" : (err as Error).message, ...details }, headers);
     });
   });
   server.requestTimeout = REQUEST_TIMEOUT_MS;

@@ -56,3 +56,33 @@ describe("TokenStore", () => {
     expect((await TokenStore.open(dir)).find(token)).toBeUndefined();
   });
 });
+
+describe("TokenStore plans", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "share-plans-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("sets and clears a token's Pro plan, surviving a restart", async () => {
+    const store = await TokenStore.open(dir);
+    const { token, record } = await store.issue(NOW);
+    const until = NOW + 30 * 86_400_000;
+
+    expect(await store.setPlan(record.id, until)).toEqual({ ...record, plan: { name: "pro", until } });
+    expect((await TokenStore.open(dir)).find(token)?.plan).toEqual({ name: "pro", until });
+
+    expect(await store.setPlan(record.id, undefined)).toEqual(record);
+    expect(store.find(token)).toEqual(record);
+  });
+
+  it("returns undefined when setting the plan of an unknown token", async () => {
+    const store = await TokenStore.open(dir);
+    expect(await store.setPlan("tok_missing", NOW)).toBeUndefined();
+    expect(store.count()).toBe(0);
+  });
+});

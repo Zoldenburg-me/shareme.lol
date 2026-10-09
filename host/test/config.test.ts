@@ -66,4 +66,21 @@ describe("loadConfig", () => {
     const env = { SHARE_API_TOKEN: TOKEN, PUBLIC_BASE_URL: "https://a.b", DEFAULT_TTL_SECONDS: "100", MAX_TTL_SECONDS: "10" };
     expect(() => loadConfig(env)).toThrow(/DEFAULT_TTL_SECONDS/);
   });
+
+  it("gives Pro tokens 90 days, 5 GiB and 2000 files by default, and takes no payments", () => {
+    const config = loadConfig({ SHARE_API_TOKEN: TOKEN, PUBLIC_BASE_URL: "https://a.b" });
+    expect(config.pro).toEqual({ maxTtlSeconds: 90 * 86_400, quotaBytes: 5 * 1024 ** 3, maxFiles: 2000 });
+    expect(config.x402).toBeUndefined();
+  });
+
+  it("refuses a Pro plan shorter than the free one", () => {
+    expect(() => loadConfig({ SHARE_API_TOKEN: TOKEN, PUBLIC_BASE_URL: "https://a.b", PRO_MAX_TTL_SECONDS: "60" })).toThrow(/PRO_MAX_TTL_SECONDS/);
+  });
+
+  it("takes x402 payments once a pay-to address and facilitator are set", () => {
+    const config = loadConfig({
+      SHARE_API_TOKEN: TOKEN, PUBLIC_BASE_URL: "https://a.b", X402_PAY_TO: "0x" + "ab".repeat(20), X402_FACILITATOR_URL: "https://pay.example.com",
+    });
+    expect(config.x402).toMatchObject({ network: "eip155:8453", facilitatorUrl: "https://pay.example.com" });
+  });
 });
