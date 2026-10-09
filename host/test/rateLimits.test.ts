@@ -96,6 +96,25 @@ describe("request rate limits", () => {
     expect((await getConfig(ADMIN, "203.0.113.7")).status).toBe(200);
   });
 
+  it("charges wrong tokens to the IP's API allowance without using up a valid token's", async () => {
+    await start({ apiRequestsPerIpPerMinute: 3 });
+    for (let i = 0; i < 3; i++) expect((await getConfig("wrong", "203.0.113.7")).status).toBe(401);
+    expect((await getConfig("wrong", "203.0.113.7")).status).toBe(429);
+    expect((await getConfig(ADMIN, "203.0.113.7")).status).toBe(200);
+  });
+
+  it("charges signups to the IP's API allowance, even with a valid token attached", async () => {
+    await start({ apiRequestsPerIpPerMinute: 2 });
+    const signup = (ip: string, token?: string) =>
+      fetch(`${base}/api/tokens`, { method: "POST", headers: { ...from(ip), ...(token ? bearer(token) : {}) } });
+    expect((await signup("203.0.113.7")).status).toBe(201);
+    expect((await signup("203.0.113.7", ADMIN)).status).toBe(201);
+    expect((await signup("203.0.113.7")).status).toBe(429);
+    expect((await fetch(`${base}/api/config`, { headers: from("203.0.113.7") })).status).toBe(429);
+    expect((await getConfig(ADMIN, "203.0.113.7")).status).toBe(200);
+    expect((await signup("198.51.100.7")).status).toBe(201);
+  });
+
   it("locks an IP out of wrong tokens, but never refuses a right one from it", async () => {
     await start({ authFailuresPerIpPerHour: 2 });
     expect((await getConfig("wrong")).status).toBe(401);
