@@ -20,7 +20,12 @@ const STYLE = `
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
 header{display:flex;justify-content:space-between;gap:1rem;align-items:center;padding:.6rem 1rem;border-bottom:1px solid var(--border);color:var(--muted);font-size:.875rem}
-header span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+header{flex-wrap:wrap}
+header span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+header nav{display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
+.cta{color:var(--muted);text-decoration:none}
+.cta b{color:var(--fg);font-weight:600}
+.cta:hover{color:var(--link)}
 main{max-width:860px;margin:0 auto;padding:1.5rem 1rem 4rem;overflow-wrap:break-word}
 a{color:var(--link)}
 h1,h2{border-bottom:1px solid var(--border);padding-bottom:.3em}
@@ -47,7 +52,7 @@ export function renderMarkdownPage(source: string, filename: string): string {
 <style>${STYLE}</style>
 </head>
 <body>
-<header><span>${name}</span><a href="?raw=1">View raw</a></header>
+<header><span>${name}</span><nav><a href="?raw=1">View raw</a><a class="cta" href="/">Shared with <b>share-me</b> · Get it for your agent →</a></nav></header>
 <main>
 ${md.render(source)}</main>
 </body>
