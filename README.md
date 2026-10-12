@@ -1,6 +1,49 @@
+<p align="center">
+  <a href="https://shareme.lol"><img src="assets/readme/hero.svg" width="100%" alt="share-me: hand your human a link, not an attachment. An MCP server for Claude Code, Codex and Cursor. Links expire in 24 h by default and can be revoked any time."></a>
+</p>
+
+<p align="center">
+  <a href="https://shareme.lol"><b>shareme.lol</b></a> &nbsp;·&nbsp;
+  <a href="https://shareme.lol/setup"><b>Setup guide</b></a> &nbsp;·&nbsp;
+  <a href="#setup"><b>Self-host</b></a> &nbsp;·&nbsp;
+  <a href="#security-model"><b>Security model</b></a>
+</p>
+
+<br>
+
 # share-me
 
-Let AI agents turn locally generated files into **expiring, unguessable links** that their human can forward to anyone, without attaching the file as a document.
+**Hand your human a link, not an attachment.** Your agent turns any file it makes into a link that expires. Nothing lingers on a server, and you can revoke it any time. It works in Claude Code, Codex, Cursor and Claude Desktop.
+
+<p align="center">
+  <img src="assets/readme/how-it-works.svg" width="100%" alt="How it works. An attachment sits in every inbox it reaches. A link expires, and you can revoke it. Your agent calls share_file(path). share-me-mcp on your machine shares only from allowlisted folders and scans for secrets before upload. The host at shareme.lol checks the file type and deletes the file at expiry. Your human opens shareme.lol/r/Xk3p9Qa2Lm, with no account and no attachment size limit. Three tools: share_file (file in, link out), list_links (see what's live and for how long), revoke_link (end a link now, the file is deleted). Expiry deletes the file from the server, not copies people already saved.">
+</p>
+
+What you get: nothing left lying around in storage, a revoke button, no attachment size limits, and no bucket, Drive folder or account to set up, in every agent client. Expiry deletes the file from the server, not copies people already saved.
+
+## Quick start
+
+Paste this into your agent's chat, and it follows the guide the host serves at `/setup`:
+
+```
+Set up share-me from https://shareme.lol/setup
+```
+
+Or register it yourself (every client is under [Register the MCP server](#4-register-the-mcp-server-with-your-agent)):
+
+```bash
+claude mcp add share-me --scope user -- npx -y share-me-mcp@0.1.0
+```
+
+There is no signup form: on first run your agent gets its own token for shareme.lol.
+
+> `share-me-mcp` is not on npm yet, so the `npx` commands work once `mcp/` is published (`npm publish -w mcp`). Until then, use `node /path/to/share-me/mcp/dist/index.js` in place of `npx -y share-me-mcp@0.1.0`.
+
+<p align="center">
+  <img src="assets/readme/run.svg" width="100%" alt="Two ways to run it. Try it on ours, or keep it on yours. Hosted at shareme.lol: your agent gets its own token on first run, with 250 MB of storage; links last 24 h by default and 7 days at most. Self-host: run the host on Akash or any Docker host, and your files never touch shareme.lol.">
+</p>
+
+## Architecture
 
 ```
 agent ──share_file(path)──▶ share-me-mcp (your machine)
@@ -230,3 +273,9 @@ SHARE_API_TOKEN=$(openssl rand -hex 32) PUBLIC_BASE_URL=http://localhost:8080 DA
 ```
 
 (Run `npm run build` first.)
+
+<br>
+
+<p align="center">
+  <a href="https://shareme.lol"><img src="assets/readme/footer.svg" width="100%" alt="share-me at shareme.lol, built by Zoldenburg"></a>
+</p>
