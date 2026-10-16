@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -187,6 +187,31 @@ describe("host HTTP API", () => {
     expect(server.requestTimeout).toBe(30 * 60_000);
     expect(server.keepAliveTimeout).toBe(65_000);
     expect(server.headersTimeout).toBeGreaterThan(server.keepAliveTimeout);
+  });
+
+  it("closes a connection that keeps trickling a body the response didn't need", async () => {
+    const slow = createServer({ ...config, uploadPaceWindowMs: 200 }, await FileStore.open(dir));
+    await new Promise<void>((r) => slow.listen(0, "127.0.0.1", r));
+    try {
+      // A refused upload (error path) and a page that never reads its body (Node's own drain).
+      for (const [head, status] of [["POST /api/files", "401"], ["GET /", "200"]]) {
+        const socket = connect((slow.address() as AddressInfo).port, "127.0.0.1");
+        socket.on("error", () => {});
+        let reply = "";
+        socket.on("data", (d) => (reply += d));
+        const closed = new Promise<string>((r) => socket.on("close", () => r("closed")));
+        socket.write(`${head} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer wrong\r\ntransfer-encoding: chunked\r\n\r\n1\r\nx\r\n`);
+        const trickle = setInterval(() => socket.write("1\r\nx\r\n"), 50);
+        const outcome = await Promise.race([closed, new Promise<string>((r) => setTimeout(() => r("still open"), 2000))]);
+        clearInterval(trickle);
+        socket.destroy();
+        expect(reply.startsWith(`HTTP/1.1 ${status}`)).toBe(true);
+        expect(outcome).toBe("closed");
+      }
+    } finally {
+      slow.closeAllConnections();
+      await new Promise((r) => slow.close(r));
+    }
   });
 
   it("uses the default TTL and clamps to the max TTL", async () => {
