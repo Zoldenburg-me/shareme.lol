@@ -16,6 +16,14 @@ const MAX_EXTEND_HOURS = 24 * 366;
 // $1 in USDC (6 decimals). Set SHARE_MAX_PAYMENT_ATOMIC to allow more per payment.
 const DEFAULT_MAX_PAYMENT_ATOMIC = 1_000_000;
 const MAX_HOST_MESSAGE_LENGTH = 200;
+// The x402 MCP transport: the client pays in the request's _meta and gets the receipt in the result's.
+const PAYMENT_META = "x402/payment";
+const PAYMENT_RESPONSE_META = "x402/payment-response";
+
+/** What a tool handler needs of the MCP request: its `_meta`. */
+interface ToolExtra {
+  readonly _meta?: Readonly<Record<string, unknown>>;
+}
 
 type ToolResult = CallToolResult & { content: [{ type: "text"; text: string }] };
 
@@ -45,7 +53,8 @@ export const extendLinkInput = {
   id: z.string().min(1).describe("The link id returned by share_file or list_links."),
   ttl_hours: z.number().positive().max(MAX_EXTEND_HOURS).describe("How long from now the link should stay valid, in hours."),
   payment: z.string().max(MAX_PAYMENT_LENGTH).regex(/^[A-Za-z0-9+/=]+$/).optional().describe(
-    "Only when retrying after a payment quote: the base64 x402 PAYMENT-SIGNATURE your wallet produced for that quote.",
+    "Only when retrying after a payment quote and your client can't send it as _meta[\"x402/payment\"]: " +
+      "the base64 x402 PAYMENT-SIGNATURE your wallet produced for that quote.",
   ),
 };
 
@@ -64,7 +73,7 @@ function cappedNote(link: SharedLink): string {
     "To keep it longer, call extend_link; past your plan's limit the host quotes a small x402 payment.";
 }
 
-// Host and facilitator text reaches the agent's context; keep it short and on one line.
+// Host text reaches the agent's context; keep it short and on one line.
 const hostText = (value: string | undefined) =>
   (value ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, MAX_HOST_MESSAGE_LENGTH);
 
@@ -104,23 +113,32 @@ function checkTerms(terms: Terms | undefined, maxAtomic: number, policy: HostPol
   }
 }
 
+/** The payment to send: the transport's _meta PaymentPayload (encoded as the host's header), else the legacy argument. */
+function paymentOf(args: ExtendLinkArgs, extra: ToolExtra | undefined): string | undefined {
+  const payload = extra?._meta?.[PAYMENT_META];
+  if (payload === undefined) return args.payment;
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) throw new Error(`_meta["${PAYMENT_META}"] must be an x402 PaymentPayload object`);
+  const header = Buffer.from(JSON.stringify(payload)).toString("base64");
+  if (header.length > MAX_PAYMENT_LENGTH) throw new Error(`_meta["${PAYMENT_META}"] is too large to be an x402 payment`);
+  return header;
+}
+
 function describeExtension(result: ExtendResult): ToolResult {
   if (result.kind === "payment_required") {
-    const price = result.price ? ` costs ${hostText(result.price)} ${hostText(result.currency)}`.trimEnd() : " needs a payment";
-    return ok(
-      `Keeping this link that long${price} (${hostText(result.message)}). ` +
-        "To pay, have your x402 wallet sign the paymentRequired quote below, then call extend_link again with the same id and ttl_hours " +
-        "and `payment` set to the base64 PAYMENT-SIGNATURE it returns. Only pay if your human wants the link kept this long.",
-      { price: result.price, currency: result.currency, paymentRequired: result.paymentRequired, paymentRequiredHeader: result.header },
-    );
+    // x402 MCP transport: an error result whose structuredContent (and text) is the PaymentRequired.
+    const price = result.price ? ` It costs ${hostText(result.price)} ${hostText(result.currency)}.`.trimEnd() : "";
+    const required = {
+      ...(result.paymentRequired as Record<string, unknown>),
+      error: `${hostText(result.message)}.${price} Only pay if your human wants the link kept this long.`,
+    };
+    return { content: [{ type: "text", text: JSON.stringify(required) }], structuredContent: required, isError: true };
   }
   const { link, receipt } = result;
-  const paid = receipt?.transaction
-    ? `\nPaid: transaction ${receipt.transaction} on ${receipt.network ?? "chain"}.`
-    : link.paymentStatus === "pending"
-      ? "\nThe host couldn't confirm the payment settled; the extension stands and the host operator will reconcile it. Don't pay again for this link."
-      : "";
-  return ok(`Link ${link.id} now expires at ${link.expiresAt}.${paid}`, { ...link, ...(receipt ? { receipt } : {}) });
+  const paid = receipt?.transaction ? `\nPaid: transaction ${receipt.transaction} on ${receipt.network ?? "chain"}.` : "";
+  return {
+    ...ok(`Link ${link.id} now expires at ${link.expiresAt}.${paid}`, { ...link }),
+    ...(receipt ? { _meta: { [PAYMENT_RESPONSE_META]: receipt } } : {}),
+  };
 }
 
 function requireAllowedType(filename: string, policy: HostPolicy): void {
@@ -185,13 +203,14 @@ export function createShareTools(config: McpConfig, client: HostClient) {
     }
   }
 
-  async function extendLink(args: ExtendLinkArgs): Promise<ToolResult> {
+  async function extendLink(args: ExtendLinkArgs, extra?: ToolExtra): Promise<ToolResult> {
     try {
       const maxAtomic = config.maxPaymentAtomic ?? DEFAULT_MAX_PAYMENT_ATOMIC;
       const ttlSeconds = Math.max(1, Math.round(args.ttl_hours * HOUR_SECONDS));
+      const payment = paymentOf(args, extra);
       // Checked before sending, so a signed payment over the cap never leaves this machine.
-      if (args.payment) checkTerms(signedTerms(args.payment), maxAtomic, await getPolicy());
-      const result = await client.extend(args.id, ttlSeconds, args.payment);
+      if (payment) checkTerms(signedTerms(payment), maxAtomic, await getPolicy());
+      const result = await client.extend(args.id, ttlSeconds, payment);
       if (result.kind === "payment_required") checkTerms(quotedTerms(result.paymentRequired), maxAtomic, await getPolicy());
       return describeExtension(result);
     } catch (err) {
@@ -224,7 +243,8 @@ export function registerShareTools(server: McpServer, tools: ReturnType<typeof c
       title: "Keep a shared link longer",
       description:
         "Keep an existing link valid until ttl_hours from now. Free up to your plan's limit; past it the host returns an x402 payment quote " +
-        "instead. If you have an x402 wallet, sign that quote and call this tool again with `payment`. Links are never shortened.",
+        "instead, as an error whose structuredContent is the x402 PaymentRequired. Pay it by calling again with the signed PaymentPayload in " +
+        "_meta[\"x402/payment\"] (or base64 in `payment`); the receipt comes back in _meta[\"x402/payment-response\"]. Links are never shortened.",
       inputSchema: extendLinkInput,
     },
     tools.extendLink,

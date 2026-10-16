@@ -2,7 +2,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HostConfig } from "./config.js";
 import { checkContent, contentTypeOf, extensionOf, HEAD_BYTES } from "./fileTypes.js";
-import { createExtender, type Payments } from "./extend.js";
+import { createExtender } from "./extend.js";
+import type { Payments } from "./x402.js";
 import { clientIp, HttpError, readJson, sendJson, tooManyRequests } from "./http.js";
 import { peek } from "./peek.js";
 import type { Limits } from "./limits.js";
@@ -215,9 +216,8 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
   }
 
   async function extendFile(req: IncomingMessage, res: ServerResponse, id: string, who: Principal): Promise<void> {
-    const { meta, headers, paymentPending } = await extend(req, id, who);
-    const pending = paymentPending ? { paymentStatus: "pending" } : {};
-    sendJson(res, 200, { ...toPublic(meta, config.publicBaseUrl), ...pending }, { ...NO_STORE, ...headers });
+    const { meta, headers } = await extend(req, id, who);
+    sendJson(res, 200, toPublic(meta, config.publicBaseUrl), { ...NO_STORE, ...headers });
   }
 
   async function setPlan(req: IncomingMessage, res: ServerResponse, id: string, who: Principal): Promise<void> {

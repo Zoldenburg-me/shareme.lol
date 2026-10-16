@@ -174,32 +174,40 @@ describe("share tools", () => {
   });
   const payingPolicy = { ...policy, payments: { x402: { network: "eip155:8453", currency: "USDC", payTo: PAY_TO, maxLifetimeSeconds: 1 } } };
 
-  it("extend_link extends a link and reports the payment it made", async () => {
+  it("extend_link pays with the _meta PaymentPayload and returns the receipt in _meta (x402 MCP transport)", async () => {
     client.getConfig.mockResolvedValue(payingPolicy);
-    client.extend.mockResolvedValue({ kind: "extended", link: { ...link, expiresAt: "2026-11-08T12:00:00.000Z" }, receipt: { success: true, transaction: "0xtx", network: "eip155:8453" } });
-    const payment = signedPayment("10001");
-    const result = await tools().extendLink({ id: link.id, ttl_hours: 720, payment });
-    expect(client.extend).toHaveBeenCalledWith(link.id, 720 * 3600, payment);
+    const receipt = { success: true, transaction: "0xtx", network: "eip155:8453" };
+    client.extend.mockResolvedValue({ kind: "extended", link: { ...link, expiresAt: "2026-11-08T12:00:00.000Z" }, receipt });
+    const payload = { x402Version: 2, accepted: requirement("10001"), payload: { signature: "0xsig" } };
+    const result = await tools().extendLink({ id: link.id, ttl_hours: 720 }, { _meta: { "x402/payment": payload } });
+    expect(client.extend).toHaveBeenCalledWith(link.id, 720 * 3600, b64(payload));
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).toMatch(/now expires at 2026-11-08T12:00:00.000Z/);
     expect(result.content[0].text).toMatch(/Paid: transaction 0xtx on eip155:8453/);
+    expect(result._meta).toEqual({ "x402/payment-response": receipt });
+    expect(result.structuredContent).not.toHaveProperty("receipt");
   });
 
-  it("extend_link hands the payment quote to the agent's wallet instead of failing", async () => {
+  it("extend_link still takes a base64 payment argument, and refuses a _meta payment that isn't an object", async () => {
+    client.getConfig.mockResolvedValue(payingPolicy);
+    client.extend.mockResolvedValue({ kind: "extended", link });
+    const payment = signedPayment("10001");
+    const result = await tools().extendLink({ id: link.id, ttl_hours: 720, payment });
+    expect(client.extend).toHaveBeenCalledWith(link.id, 720 * 3600, payment);
+    expect(result._meta).toBeUndefined();
+    const bad = await tools().extendLink({ id: link.id, ttl_hours: 720 }, { _meta: { "x402/payment": payment } });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0].text).toMatch(/PaymentPayload object/);
+    expect(client.extend).toHaveBeenCalledTimes(1);
+  });
+
+  it("extend_link answers payment required as an error result carrying the PaymentRequired (x402 MCP transport)", async () => {
     client.getConfig.mockResolvedValue(payingPolicy);
     client.extend.mockResolvedValue(quote("10001"));
     const result = await tools().extendLink({ id: link.id, ttl_hours: 720 });
-    expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toMatch(/costs 0.010001 USDC/);
-    expect(result.content[0].text).toMatch(/PAYMENT-SIGNATURE/);
-    expect(result.structuredContent).toMatchObject({ price: "0.010001", currency: "USDC", paymentRequired: quote("10001").paymentRequired, paymentRequiredHeader: "UFJR" });
-  });
-
-  it("extend_link tells the agent not to pay again when the payment is pending", async () => {
-    client.extend.mockResolvedValue({ kind: "extended", link: { ...link, paymentStatus: "pending" } });
-    const text = (await tools().extendLink({ id: link.id, ttl_hours: 720 })).content[0].text;
-    expect(text).toMatch(/couldn't confirm the payment settled/);
-    expect(text).toMatch(/Don't pay again/);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ ...quote("10001").paymentRequired, error: expect.stringMatching(/costs 0.010001 USDC/) });
+    expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
   });
 
   it("extend_link refuses quotes and payments over the spending cap", async () => {
