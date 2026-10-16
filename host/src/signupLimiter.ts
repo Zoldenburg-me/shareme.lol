@@ -1,12 +1,15 @@
-import { isIPv4, isIPv6 } from "node:net";
+import { isIPv6 } from "node:net";
 
 const HOUR_MS = 3_600_000;
 const HOURS_PER_DAY = 24;
 const PRUNE_ABOVE = 1000;
+const SITE_GROUPS = 3; // a /48
+const SITE_FACTOR = 2;
 
 /**
- * In-memory signup throttle: a per-network hourly window plus a global cap over the last 24 hours,
- * of which any one hour may spend only its 1/24 share, so a burst can't block signups for a day.
+ * In-memory signup throttle: a per-network hourly window (IPv4 address, IPv6 /64 and /48) plus a
+ * global cap over the last 24 hours, of which any one hour may spend only its 1/24 share, so a
+ * burst can't block signups for a day.
  * IP addresses are never written to disk and are forgotten after an hour.
  */
 export class SignupLimiter {
@@ -28,11 +31,17 @@ export class SignupLimiter {
     const hours = new Map([...this.hours].filter(([h]) => hour - h < HOURS_PER_DAY));
     const thisHour = hours.get(hour) ?? 0;
     const lastDay = [...hours.values()].reduce((sum, n) => sum + n, 0);
-    const key = networkOf(ip);
-    const recent = (this.byIp.get(key) ?? []).filter((t) => now - t < HOUR_MS);
-    if (recent.length >= this.perIpPerHour || thisHour >= this.perHour || lastDay >= this.perDay) return false;
+    // An IPv6 /48 (one site) gets twice a /64's allowance; for IPv4 both keys are the same address.
+    const limits = new Map([
+      [networkOf(ip, SITE_GROUPS), SITE_FACTOR * this.perIpPerHour],
+      [networkOf(ip), this.perIpPerHour],
+    ]);
+    const recent = new Map([...limits.keys()].map((k) => [k, (this.byIp.get(k) ?? []).filter((t) => now - t < HOUR_MS)]));
+    const networkFull = [...limits].some(([k, limit]) => (recent.get(k)?.length ?? 0) >= limit);
+    if (networkFull || thisHour >= this.perHour || lastDay >= this.perDay) return false;
     this.hours = new Map([...hours, [hour, thisHour + 1]]);
-    this.byIp = this.prune(new Map([...this.byIp, [key, [...recent, now]]]), now);
+    const recorded = [...recent].map(([k, times]): [string, readonly number[]] => [k, [...times, now]]);
+    this.byIp = this.prune(new Map([...this.byIp, ...recorded]), now);
     return true;
   }
 
@@ -42,17 +51,29 @@ export class SignupLimiter {
   }
 }
 
-/** IPv6 addresses by their /64 (one customer's usual allocation); IPv4 and anything else as is. */
-export function networkOf(address: string): string {
-  const ip = address.split("%")[0];
-  const mapped = ip.toLowerCase().startsWith("::ffff:") ? ip.slice(7) : "";
-  if (isIPv4(mapped)) return mapped;
-  if (!isIPv6(ip)) return address;
-  // An embedded dotted IPv4 tail is two groups; it only ever sits in the low 64 bits.
-  const groups = (part: string) => (part ? part.split(":").flatMap((g) => (g.includes(".") ? ["0", "0"] : [g])) : []);
-  const [head, tail] = ip.split("::");
-  const front = groups(head);
-  const back = tail === undefined ? [] : groups(tail);
-  const full = [...front, ...Array(8 - front.length - back.length).fill("0"), ...back];
-  return `${full.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(":")}::/64`;
+/**
+ * IPv6 addresses by their first `prefixGroups` 16-bit groups (default /64, one customer's usual
+ * allocation); IPv4-mapped IPv6 as the IPv4 address; IPv4 and anything else as is.
+ */
+export function networkOf(address: string, prefixGroups = 4): string {
+  const g = ipv6Groups(address);
+  if (!g) return address;
+  if (g.slice(0, 5).every((n) => n === 0) && g[5] === 0xffff) return [g[6] >> 8, g[6] & 255, g[7] >> 8, g[7] & 255].join(".");
+  return `${g.slice(0, prefixGroups).map((n) => n.toString(16)).join(":")}::/${prefixGroups * 16}`;
 }
+
+/** The eight 16-bit groups of an IPv6 address, or undefined if it isn't one. */
+function ipv6Groups(address: string): number[] | undefined {
+  const ip = address.split("%")[0];
+  if (!isIPv6(ip)) return undefined;
+  const parse = (part: string) => (part ? part.split(":").flatMap((g) => (g.includes(".") ? dottedGroups(g) : [parseInt(g, 16)])) : []);
+  const [head, tail] = ip.split("::");
+  const front = parse(head);
+  const back = tail === undefined ? [] : parse(tail);
+  return [...front, ...Array<number>(8 - front.length - back.length).fill(0), ...back];
+}
+
+const dottedGroups = (v4: string): number[] => {
+  const [a, b, c, d] = v4.split(".").map(Number);
+  return [(a << 8) | b, (c << 8) | d];
+};
