@@ -13,6 +13,24 @@ export interface HubRecord {
 type Row = { file_ref: string; until: number; amount: string; delivered: number };
 
 /**
+ * A table from before `held` existed held every undelivered row's link: add the column, keeping that.
+ * CREATE TABLE IF NOT EXISTS leaves an existing table as it is.
+ */
+function addHeldColumn(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(hub_payments)").all() as { name: string }[];
+  if (columns.some((c) => c.name === "held")) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec("ALTER TABLE hub_payments ADD COLUMN held INTEGER NOT NULL DEFAULT 0");
+    db.exec("UPDATE hub_payments SET held = 1 WHERE delivered = 0");
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
  * The hub keeps the ledger; this host keeps only the price each payment was first sent at, so a retry of
  * the same payment (after a lost answer, an hour boundary or the link's expiry) is replayed by the hub
  * instead of refused. Keyed by a hash of payer and nonce: no wallet address is stored.
@@ -22,6 +40,7 @@ export class HubPaymentRecords {
     db.exec(`CREATE TABLE IF NOT EXISTS hub_payments (
       key TEXT PRIMARY KEY, file_ref TEXT NOT NULL, until INTEGER NOT NULL, amount TEXT NOT NULL,
       delivered INTEGER NOT NULL DEFAULT 0, held INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`);
+    addHeldColumn(db);
   }
 
   /** The record key for a PAYMENT-SIGNATURE header, or undefined if it isn't an EIP-3009 x402 payment. */

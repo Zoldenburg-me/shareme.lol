@@ -323,6 +323,30 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
     expect(HUB_TIMEOUT_MS).toBeLessThan(90_000); // mcp/src/client.ts EXTEND_TIMEOUT_MS
   });
 
+  it("lets a first rate-limited payment hold nothing, so a junk one can't keep a file", async () => {
+    const { token, id } = await start(newHub());
+    const payment = await pay(await extend(token, id));
+    network = "rate-limited";
+    const res = await extend(token, id, { "payment-signature": payment });
+    expect(res.status).toBe(429);
+    expect(await isHeld(id)).toBe(false);
+    clock += 2 * DAY_MS;
+    expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([id]);
+  });
+
+  it("adds the held column to a table from before it, keeping undelivered rows' links held", () => {
+    const db = openSqlite(":memory:");
+    db.exec(`CREATE TABLE hub_payments (key TEXT PRIMARY KEY, file_ref TEXT NOT NULL, until INTEGER NOT NULL, amount TEXT NOT NULL,
+      delivered INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`);
+    db.exec("INSERT INTO hub_payments VALUES ('open', 'linkA', 1, '1', 0, 0), ('done', 'linkB', 1, '1', 1, 0)");
+    const records = new HubPaymentRecords(db);
+    expect(records.undeliveredRefs()).toEqual(new Set(["linkA"]));
+    records.remember("new", "linkC", 1, 1n, 0);
+    expect(records.undeliveredRefs()).toEqual(new Set(["linkA"]));
+    new HubPaymentRecords(db); // reopening changes nothing
+    expect(records.undeliveredRefs()).toEqual(new Set(["linkA"]));
+  });
+
   it("holds only the link a payment was recorded for", () => {
     const records = new HubPaymentRecords(openSqlite(":memory:"));
     records.remember("k", "linkA", 1, 1n, 0);
