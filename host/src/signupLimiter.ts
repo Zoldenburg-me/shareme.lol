@@ -31,13 +31,15 @@ export class SignupLimiter {
     const hour = Math.floor(now / HOUR_MS);
     const lastDay = this.lastDay.filter((t) => now - t < DAY_MS);
     const thisHour = lastDay.filter((t) => Math.floor(t / HOUR_MS) === hour).length;
-    // An IPv6 /48 (one site) gets twice a /64's allowance; for IPv4 both keys are the same address.
-    const limits = new Map([
-      [networkOf(ip, SITE_GROUPS), SITE_FACTOR * this.perIpPerHour],
-      [networkOf(ip), this.perIpPerHour],
-    ]);
-    const recent = new Map([...limits.keys()].map((k) => [k, (this.byIp.get(k) ?? []).filter((t) => now - t < HOUR_MS)]));
-    const networkFull = [...limits].some(([k, limit]) => (recent.get(k)?.length ?? 0) >= limit);
+    const network = networkOf(ip);
+    const site = networkOf(ip, SITE_GROUPS);
+    // An IPv6 /48 (one site) also gets twice a /64's allowance; IPv4 has no wider key.
+    const limits: readonly [string, number][] = [
+      [network, this.perIpPerHour],
+      ...(site === network ? [] : [[site, SITE_FACTOR * this.perIpPerHour] as [string, number]]),
+    ];
+    const recent = new Map(limits.map(([k]) => [k, (this.byIp.get(k) ?? []).filter((t) => now - t < HOUR_MS)]));
+    const networkFull = limits.some(([k, limit]) => (recent.get(k)?.length ?? 0) >= limit);
     if (networkFull || thisHour >= this.perHour || lastDay.length >= this.perDay) return false;
     this.lastDay = [...lastDay, now];
     const recorded = [...recent].map(([k, times]): [string, readonly number[]] => [k, [...times, now]]);

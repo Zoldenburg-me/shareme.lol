@@ -338,7 +338,7 @@ describe("self-service accounts", () => {
     expect((await signup("198.51.100.7")).status).toBe(201);
     const limited = await signup("198.51.100.7");
     expect(limited.status).toBe(429);
-    expect((await limited.json()).error).toMatch(/try again/i);
+    expect((await limited.json()).error).toBe("Too many signups right now; try again later");
     expect((await signup("198.51.100.8")).status).toBe(201);
   });
 
