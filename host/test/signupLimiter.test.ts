@@ -28,6 +28,14 @@ describe("SignupLimiter", () => {
     expect(limiter.allow("b", HOUR)).toBe(true);
   });
 
+  it("counts the daily cap over exactly the last 24 hours, not whole clock hours", () => {
+    const limiter = new SignupLimiter(1, 24);
+    const lateInEachHour = Array.from({ length: 24 }, (_, h) => limiter.allow(`10.0.${h}.1`, h * HOUR + HOUR - 1));
+    expect(lateInEachHour.every(Boolean)).toBe(true);
+    expect(limiter.allow("10.1.0.1", DAY + 1)).toBe(false);
+    expect(limiter.allow("10.1.0.2", DAY + HOUR - 1)).toBe(true);
+  });
+
   it("keys IPv6 by /64, so one actor's many addresses share the per-IP limit", () => {
     const limiter = new SignupLimiter(2, 100);
     expect(limiter.allow("2001:db8:1:2::1", 0)).toBe(true);
