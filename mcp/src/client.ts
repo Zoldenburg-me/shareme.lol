@@ -12,8 +12,6 @@ export interface SharedLink {
   readonly ttlCapped?: boolean;
   readonly requestedTtlSeconds?: number;
   readonly maxTtlSeconds?: number;
-  /** "pending" after a paid extension the host couldn't confirm was settled. */
-  readonly paymentStatus?: "pending";
 }
 
 /** An x402 v2 settlement receipt (the host's PAYMENT-RESPONSE). */
@@ -38,6 +36,9 @@ export type ExtendResult =
     };
 
 const API_TIMEOUT_MS = 30_000;
+// A paid extension waits for settlement: the host answers "pending" after ~20 s of confirmations, but its
+// pre-checks and broadcast may each use their own RPC timeouts first (3 × 10 s + 30 s). Stay above all of it.
+const EXTEND_TIMEOUT_MS = 90_000;
 const UPLOAD_TIMEOUT_MS = 30 * 60_000;
 
 export interface UploadRequest {
@@ -118,11 +119,21 @@ export class HostClient {
 
   /** Keep a link `ttlSeconds` from now; past the plan's limit the host asks for an x402 payment. */
   async extend(id: string, ttlSeconds: number, payment?: string): Promise<ExtendResult> {
-    const res = await this.request(`/api/files/${encodeURIComponent(id)}/extend`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(payment ? { "payment-signature": payment } : {}) },
-      body: JSON.stringify({ ttlSeconds }),
-    }, API_TIMEOUT_MS, true);
+    let res: Response;
+    try {
+      res = await this.request(`/api/files/${encodeURIComponent(id)}/extend`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(payment ? { "payment-signature": payment } : {}) },
+        body: JSON.stringify({ ttlSeconds }),
+      }, EXTEND_TIMEOUT_MS, true);
+    } catch (err) {
+      // The payment may have gone out before the connection dropped: say so, so it isn't paid twice.
+      if (payment && /Could not reach/.test((err as Error).message)) {
+        throw new Error(`${(err as Error).message}. The payment may still settle and extend the link by itself; ` +
+          "call extend_link again with the same payment to check, and don't sign a new one.");
+      }
+      throw err;
+    }
     const header = res.headers.get("payment-required");
     if (res.status === 402) {
       if (!header) throw new Error(await errorDetail(res));
