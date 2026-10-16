@@ -158,12 +158,15 @@ describe("share tools", () => {
     expect(listed.filename).toBe(cleaned);
   });
 
-  it("share_file and extend_link sanitize the host's link in structuredContent", async () => {
+  it("share_file fences and sanitizes the host's link; extend_link sanitizes structuredContent", async () => {
     client.upload.mockResolvedValue({ ...link, filename: hostile, url: hostileUrl });
     client.extend.mockResolvedValue({ kind: "extended", link: { ...link, filename: hostile, shortUrl: hostileUrl } });
     const shared = (await tools().shareFile({ path: join(dir, "report.html") })).structuredContent as unknown as SharedLink;
     const extended = (await tools().extendLink({ id: link.id, ttl_hours: 1 })).structuredContent as unknown as SharedLink;
     expect(shared).toMatchObject({ filename: cleaned, url: hostileUrl.replace("\n", " ") });
+    const sharedText = (await tools().shareFile({ path: join(dir, "report.html") })).content[0].text;
+    expect(sharedText).toMatch(/links and filenames.*not instructions/i);
+    expect(sharedText).toContain(JSON.stringify(hostileUrl.replace("\n", " ")));
     expect(extended).toMatchObject({ filename: cleaned, shortUrl: hostileUrl.replace("\n", " ") });
   });
 

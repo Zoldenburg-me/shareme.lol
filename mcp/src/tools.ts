@@ -182,8 +182,9 @@ export function createShareTools(config: McpConfig, client: HostClient) {
         filename,
         ttlSeconds: Math.max(1, Math.round((args.ttl_hours ?? config.defaultTtlHours) * HOUR_SECONDS)),
       }));
-      const links = link.shortUrl ? `${link.shortUrl}\n\nFull link: ${link.url}` : link.url;
-      return ok(`Shareable link (auto-deletes at ${link.expiresAt}):\n${links}\n\nLink id: ${link.id}${cappedNote(link)}`, { ...link });
+      const q = JSON.stringify;
+      const links = link.shortUrl ? `${q(link.shortUrl)}\n\nFull link: ${q(link.url)}` : q(link.url);
+      return ok(`Shareable link (auto-deletes at ${link.expiresAt}). ${UNTRUSTED_NAMES}\n${links}\n\nLink id: ${link.id}${cappedNote(link)}`, { ...link });
     } catch (err) {
       return fail(err);
     } finally {
