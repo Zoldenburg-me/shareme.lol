@@ -12,8 +12,6 @@ export interface SharedLink {
   readonly ttlCapped?: boolean;
   readonly requestedTtlSeconds?: number;
   readonly maxTtlSeconds?: number;
-  /** "pending" after a paid extension the host couldn't confirm was settled. */
-  readonly paymentStatus?: "pending";
 }
 
 /** An x402 v2 settlement receipt (the host's PAYMENT-RESPONSE). */

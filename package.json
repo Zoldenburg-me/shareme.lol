@@ -2,7 +2,10 @@
   "name": "share-me",
   "private": true,
   "type": "module",
-  "workspaces": ["host", "mcp"],
+  "workspaces": [
+    "host",
+    "mcp"
+  ],
   "scripts": {
     "build": "npm run build -w host -w mcp",
     "test": "vitest run",
@@ -14,5 +17,11 @@
     "@vitest/coverage-v8": "^5.0.0",
     "typescript": "^5.7.0",
     "vitest": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "overrides": {
+    "agentpay-hub": "file:host/vendor/agentpay-hub-0.1.0.tgz"
   }
 }

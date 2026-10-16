@@ -77,10 +77,11 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ SHARE_API_TOKEN: TOKEN, PUBLIC_BASE_URL: "https://a.b", PRO_MAX_TTL_SECONDS: "60" })).toThrow(/PRO_MAX_TTL_SECONDS/);
   });
 
-  it("takes x402 payments once a pay-to address and facilitator are set", () => {
+  it("takes x402 payments once a pay-to address, RPC and gas key are set", () => {
     const config = loadConfig({
-      SHARE_API_TOKEN: TOKEN, PUBLIC_BASE_URL: "https://a.b", X402_PAY_TO: "0x" + "ab".repeat(20), X402_FACILITATOR_URL: "https://pay.example.com",
+      SHARE_API_TOKEN: TOKEN, PUBLIC_BASE_URL: "https://a.b", X402_PAY_TO: "0x" + "ab".repeat(20), X402_RPC_URL: "https://sepolia.base.org",
+      X402_GAS_PRIVATE_KEY: `0x${"11".repeat(32)}`,
     });
-    expect(config.x402).toMatchObject({ network: "eip155:8453", facilitatorUrl: "https://pay.example.com" });
+    expect(config.x402).toMatchObject({ network: "eip155:84532", chainId: 84532 });
   });
 });

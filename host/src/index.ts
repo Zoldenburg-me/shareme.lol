@@ -8,8 +8,9 @@ import { renderSetupGuide } from "./setupGuide.js";
 import { SignupLimiter } from "./signupLimiter.js";
 import { FileStore } from "./store.js";
 import { TokenStore } from "./tokens.js";
-import { PaymentLedger } from "./payments.js";
-import { httpFacilitator } from "./x402.js";
+import { openPayments } from "./x402.js";
+
+const RECONCILE_INTERVAL_MS = 60_000;
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
@@ -17,6 +18,7 @@ async function main(): Promise<void> {
   const tokens = await TokenStore.open(config.dataDir);
   const orphans = await purgeOrphanedFiles(store, tokens);
   if (orphans > 0) console.log(`[share-host] removed ${orphans} file(s) left by revoked tokens`);
+  const payments = config.x402 && openPayments(config.x402, config.dataDir, config.publicBaseUrl);
   const server = createServer(config, store, Date.now, {
     landing: await loadLandingPage(config.landingPage, config.publicBaseUrl),
     setup: renderSetupGuide(config.publicBaseUrl),
@@ -25,11 +27,15 @@ async function main(): Promise<void> {
   }, {
     tokens,
     limiter: new SignupLimiter(config.signupsPerIpPerHour, config.signupsPerDay),
-  }, config.x402 && {
-    facilitator: httpFacilitator(config.x402.facilitatorUrl, config.x402.facilitatorAuth),
-    ledger: new PaymentLedger(config.dataDir),
-  });
-  if (config.x402) console.log(`[share-host] taking x402 payments on ${config.x402.network} via ${new URL(config.x402.facilitatorUrl).host}`);
+  }, payments);
+  if (config.x402) console.log(`[share-host] taking x402 payments on ${config.x402.network}, settling them itself`);
+  // Settles, expires or reports payments whose request ended before settlement, and prunes used claims.
+  const reconcile = payments && setInterval(() => {
+    payments.acceptor.reconcileOwed().then(
+      (r) => { if (r.settled + r.refused > 0) console.log(`[share-host] reconciled payments: ${r.settled} settled, ${r.refused} refused, ${r.open} open`); },
+      (err: unknown) => console.error("[share-host] payment reconciliation failed:", (err as { code?: string }).code ?? "unknown error"),
+    );
+  }, RECONCILE_INTERVAL_MS);
 
   const sweep = async () => {
     try {
@@ -48,6 +54,7 @@ async function main(): Promise<void> {
 
   const shutdown = () => {
     clearInterval(timer);
+    clearInterval(reconcile);
     server.close(() => process.exit(0));
     server.closeIdleConnections();
   };

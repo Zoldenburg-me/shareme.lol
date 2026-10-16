@@ -4,6 +4,7 @@ FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY host/package.json host/tsconfig.json host/
+COPY host/vendor host/vendor
 COPY mcp/package.json mcp/
 RUN npm ci --ignore-scripts
 COPY host/src host/src
@@ -14,6 +15,7 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY host/package.json host/
+COPY host/vendor host/vendor
 COPY mcp/package.json mcp/
 RUN npm ci --omit=dev --ignore-scripts --workspace host && rm -f node_modules/share-me-host node_modules/share-me-mcp
 

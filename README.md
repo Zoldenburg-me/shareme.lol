@@ -23,7 +23,7 @@ agent ──share_file(path)──▶ share-me-mcp (your machine)
 |---|---|---|
 | `share_file` | `path` (absolute), `ttl_hours?`, `filename?` | Public URL, expiry, link id. Disallowed file types are refused before uploading |
 | `list_links` | none | All active links |
-| `extend_link` | `id`, `ttl_hours`, `payment?` | Keeps a link until `ttl_hours` from now. Free up to the plan's limit; past it the host answers with an x402 payment quote, which the agent's wallet signs and passes back as `payment` |
+| `extend_link` | `id`, `ttl_hours`, `payment?` | Keeps a link until `ttl_hours` from now. Free up to the plan's limit; past it the tool answers per the x402 MCP transport: an error result whose `structuredContent` (and text) is the `PaymentRequired`. The client pays by calling again with the signed `PaymentPayload` in `_meta["x402/payment"]` (or base64 in `payment`) and gets the receipt in `_meta["x402/payment-response"]` |
 | `revoke_link` | `id` | Link stops working and the file is deleted immediately |
 
 ## Plans and paid retention
@@ -34,11 +34,9 @@ Each self-service token is on the **free** plan (`MAX_TTL_SECONDS`, `TOKEN_QUOTA
 
 1. Without payment the host answers `402` with a `PAYMENT-REQUIRED` header (and the same quote, plus a readable `price`, in the body).
 2. The client retries with `PAYMENT-SIGNATURE`: the agent's wallet signs an EIP-3009 USDC transfer for exactly that quote.
-3. The host asks the facilitator to verify it, extends the link, then settles. If settlement definitely fails, the extension is undone. Settled payments go to `<DATA_DIR>/payments.jsonl` (file `0600`; files appear as a 16-hex `fileRef`, the start of sha256 of the file id, never the id itself) and come back in `PAYMENT-RESPONSE`. If the facilitator gives no clear answer (timeout, malformed reply), the money may already have moved, so the extension stands, the response says `"paymentStatus": "pending"`, and the ledger gets a `pending` entry with the payment's EIP-3009 nonce to reconcile by hand.
+3. The host settles it itself with [`@zold/accept`](host/vendor) (no facilitator): it verifies the signature, submits `transferWithAuthorization` from a gas-only account (`X402_GAS_PRIVATE_KEY`) through its own RPC, waits for 2 confirmations, and only then extends the link. The receipt comes back in `PAYMENT-RESPONSE`. A refused payment gets a `402` (or `409`/`429`/`503`) with a `code` such as `INSUFFICIENT_FUNDS` and a fresh quote.
 
-One signed payment can't be used for two extensions at once, and at most 8 payments are checked at a time. Paid time ends on the hour, so a quote still holds while the agent's wallet signs it.
-
-The facilitator is any service that speaks the x402 facilitator API (`POST /verify`, `POST /settle`): Coinbase's, or your own payment orchestrator. The quote's resource URL is the generic `/api/files/extend`, so link ids never reach it.
+Payments live in `<DATA_DIR>/payments.db` (SQLite: ledger, used nonces, rate limits). Each payment is used once: a replay, or the same payment for another link, is refused with `409 NONCE_REPLAY`. Every 60 s the host settles or expires payments whose request ended before settlement. The quote's resource URL is the generic `/api/files/extend`, so link ids stay out of quotes and the ledger (which keeps a 16-hex `fileRef`, the start of sha256 of the file id). Paid time ends on the hour, so a quote still holds while the agent's wallet signs it. Only Base Sepolia (`eip155:84532`, test USDC) is accepted for now; the host needs Node 22.13+.
 
 ## Security model
 
@@ -188,12 +186,13 @@ npx -y share-me-mcp@0.1.0 login https://shareme.lol
 | `ALLOWED_EXTENSIONS` | all known types | Comma- or space-separated subset, e.g. `pdf,png,md`. Known types: `pdf html htm md txt log csv json xml docx xlsx pptx zip png jpg jpeg gif webp svg mp4 webm mp3 wav`. To add a type, add it to [`host/src/fileTypes.ts`](host/src/fileTypes.ts) with its content type and signature |
 | `PRO_MAX_TTL_SECONDS` / `PRO_QUOTA_MB` / `PRO_MAX_FILES` | `7776000` / `5120` / `2000` | Limits for tokens on the Pro plan |
 | `X402_PAY_TO` | off | Address that receives payments. Setting it turns on paid extensions |
-| `X402_FACILITATOR_URL` | required with `X402_PAY_TO` | Base URL of the x402 facilitator (`/verify`, `/settle` are appended) |
-| `X402_FACILITATOR_AUTH` | none | Sent as `Authorization` to the facilitator |
-| `X402_NETWORK` | `eip155:8453` | CAIP-2 chain id. USDC is known on Base (`eip155:8453`) and Base Sepolia (`eip155:84532`); elsewhere set `X402_ASSET`, `X402_ASSET_NAME`, `X402_ASSET_VERSION` (its EIP-712 domain), `X402_ASSET_DECIMALS`, `X402_ASSET_SYMBOL` |
+| `X402_RPC_URL` | required with `X402_PAY_TO` | Base Sepolia JSON-RPC URL the host reads the chain and submits through (keep any API key in it secret) |
+| `X402_GAS_PRIVATE_KEY` | required with `X402_PAY_TO` | `0x` key of an account holding only Sepolia ETH for gas; it can only call `transferWithAuthorization` on USDC to `X402_PAY_TO` |
+| `X402_NETWORK` | `eip155:84532` | Only Base Sepolia for now; anything else is refused at startup |
+| `X402_MAX_GAS` / `X402_MAX_FEE_PER_GAS` | `150000` / `10000000000` | Caps per submitted transfer: gas limit, and fee per gas in wei |
 | `X402_PRICE_PER_FILE_MONTH` / `X402_PRICE_PER_GB_MONTH` | `10000` / `20000` | Atomic units per started 30 days (USDC has 6 decimals, so $0.01 and $0.02) |
 | `X402_MAX_LIFETIME_SECONDS` | `31536000` | Longest a link may live in total, paid time included |
-| `X402_MAX_TIMEOUT_SECONDS` | `120` | How long a signed payment stays usable |
+| `X402_MAX_TIMEOUT_SECONDS` | `120` | How long a signed payment stays usable (60–240) |
 | `SWEEP_INTERVAL_SECONDS` | `60` | How often expired files are deleted |
 | `DATA_DIR` / `PORT` | `/data` / `8080` | |
 

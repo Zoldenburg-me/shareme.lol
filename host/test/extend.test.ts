@@ -1,17 +1,21 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { accept, FakeFiatToken } from "@zold/accept";
+import { openSqlite, SqliteRateLimiter, SqliteSellerLedger, SqliteSingleUseStore } from "@zold/accept/sqlite";
+import { evmX402Signer } from "agentpay-hub";
+import { encodePaymentSignature } from "agentpay-hub/protocol";
+import { generatePrivateKey } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/app.js";
 import type { HostConfig } from "../src/config.js";
-import { HttpError } from "../src/http.js";
-import { fileRef, PaymentLedger } from "../src/payments.js";
+import { fileRef } from "../src/extend.js";
 import { SignupLimiter } from "../src/signupLimiter.js";
 import { FileStore } from "../src/store.js";
 import { TokenStore } from "../src/tokens.js";
-import { encodeHeader, requirementsFor, type Facilitator, type PaymentRequirements } from "../src/x402.js";
+import { acceptOptions } from "../src/x402.js";
 import type { X402Config } from "../src/x402Config.js";
 
 const ADMIN = "a".repeat(40);
@@ -23,20 +27,20 @@ const bearer = (t: string) => ({ authorization: `Bearer ${t}` });
 const X402: X402Config = {
   payTo: PAY_TO,
   network: "eip155:84532",
+  chainId: 84532,
   asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-  assetName: "USDC",
-  assetVersion: "2",
   assetDecimals: 6,
   assetSymbol: "USDC",
-  facilitatorUrl: "https://pay.example.com",
+  rpcUrl: "https://rpc.invalid/",
+  gasPrivateKey: `0x${"11".repeat(32)}`,
+  maxGas: 150_000n,
+  maxFeePerGas: 10_000_000_000n,
   pricePerFileMonth: 10_000,
   pricePerGbMonth: 20_000,
   maxLifetimeSeconds: 365 * DAY,
   maxTimeoutSeconds: 120,
 };
 
-const signed = (reqs: PaymentRequirements) =>
-  encodeHeader({ x402Version: 2, accepted: reqs, payload: { signature: "0xsig", authorization: { value: reqs.amount, nonce: "0x1" } } });
 const decode = (header: string | null) => JSON.parse(Buffer.from(header ?? "", "base64").toString("utf8"));
 
 describe("extending links and paying with x402", () => {
@@ -45,7 +49,10 @@ describe("extending links and paying with x402", () => {
   let base: string;
   let clock: number;
   let tokens: TokenStore;
-  let facilitator: { verify: ReturnType<typeof vi.fn>; settle: ReturnType<typeof vi.fn> };
+  let chain: FakeFiatToken;
+  let ledger: SqliteSellerLedger;
+  let onError: ReturnType<typeof vi.fn>;
+  const buyer = evmX402Signer(generatePrivateKey(), () => clock);
 
   const start = async (overrides: Partial<HostConfig> = {}) => {
     const config: HostConfig = {
@@ -79,9 +86,14 @@ describe("extending links and paying with x402", () => {
       ...overrides,
     };
     tokens = await TokenStore.open(dir);
+    const db = openSqlite(":memory:");
+    ledger = new SqliteSellerLedger(db);
     server = createServer(config, await FileStore.open(dir), () => clock, undefined,
       { tokens, limiter: new SignupLimiter(100, 1000) },
-      { facilitator: facilitator as unknown as Facilitator, ledger: new PaymentLedger(dir) });
+      { acceptor: accept(acceptOptions(X402, "https://shareme.lol"), {
+        ledger, claims: new SqliteSingleUseStore(db), rateLimiter: new SqliteRateLimiter(db), chain, submitter: chain, onError,
+        now: () => clock, sleep: async () => undefined,
+      }) });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   };
@@ -93,16 +105,24 @@ describe("extending links and paying with x402", () => {
     fetch(`${base}/api/files/${id}/extend`, { method: "POST", headers: { ...bearer(token), "content-type": "application/json", ...headers }, body: JSON.stringify({ ttlSeconds }) });
   const setPlan = (token: string, id: string, until: string | null) =>
     fetch(`${base}/api/tokens/${id}/plan`, { method: "PUT", headers: { ...bearer(token), "content-type": "application/json" }, body: JSON.stringify({ until }) });
-  // What the host charges for extending a 5-byte file by up to 30 days past the free limit.
-  const oneMonth = () => requirementsFor(X402, 10_001);
+  const balance = (owner: string) => chain.balanceOfSync(owner);
+  /** What the agent's wallet sends back for the quote in a 402: a signed EIP-3009 authorization. */
+  const pay = async (quote: Response, tamper: Record<string, string> = {}) => {
+    const accepted = { ...decode(quote.headers.get("payment-required")).accepts[0], ...tamper };
+    return encodePaymentSignature({ x402Version: 2, accepted, payload: (await buyer.signX402(accepted)).payload });
+  };
+  const expiryOf = async (token: string, id: string) =>
+    ((await (await fetch(`${base}/api/files`, { headers: bearer(token) })).json()).files as { id: string; expiresAt: string }[]).find((f) => f.id === id)?.expiresAt;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "share-extend-"));
     clock = Date.parse("2026-10-09T12:00:00Z");
-    facilitator = {
-      verify: vi.fn(async () => ({ isValid: true, payer: "0xpayer" })),
-      settle: vi.fn(async () => ({ success: true, transaction: "0xtx", network: X402.network, payer: "0xpayer" })),
-    };
+    chain = new FakeFiatToken({
+      chainId: X402.chainId, asset: X402.asset, nowSec: () => Math.floor(clock / 1000),
+      domain: { name: "USDC", version: "2", chainId: X402.chainId, verifyingContract: X402.asset as `0x${string}` },
+    });
+    chain.mint(buyer.address, 1_000_000n);
+    onError = vi.fn();
   });
 
   afterEach(async () => {
@@ -132,7 +152,7 @@ describe("extending links and paying with x402", () => {
 
     const shorter = await (await extend(token, id, 60)).json();
     expect(shorter.expiresAt).toBe(new Date(clock + 6 * DAY_MS).toISOString());
-    expect(facilitator.verify).not.toHaveBeenCalled();
+    expect(chain.submissions).toHaveLength(0);
   });
 
   it("only lets a token extend its own links, with a valid ttl", async () => {
@@ -156,10 +176,15 @@ describe("extending links and paying with x402", () => {
     const res = await extend(token, id, 30 * DAY);
     expect(res.status).toBe(402);
     const required = decode(res.headers.get("payment-required"));
-    expect(required).toMatchObject({ x402Version: 2, resource: { url: "https://shareme.lol/api/files/extend" }, accepts: [oneMonth()] });
+    expect(required).toMatchObject({
+      x402Version: 2,
+      resource: { url: "https://shareme.lol/api/files/extend" },
+      // What the host charges for extending a 5-byte file by up to 30 days past the free limit.
+      accepts: [{ scheme: "exact", network: "eip155:84532", amount: "10001", asset: X402.asset, payTo: PAY_TO, maxTimeoutSeconds: 120, extra: { name: "USDC", version: "2" } }],
+    });
     expect(JSON.stringify(required)).not.toContain(id);
-    expect(await res.json()).toMatchObject({ price: "0.010001", currency: "USDC", paymentRequired: required });
-    expect(facilitator.verify).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({ code: "PAYMENT_REQUIRED", price: "0.010001", currency: "USDC", paymentRequired: required });
+    expect(res.headers.get("cache-control")).toBe("no-store");
   });
 
   it("refuses to extend past the longest lifetime the host sells", async () => {
@@ -178,123 +203,117 @@ describe("extending links and paying with x402", () => {
     expect((await res.json()).error).toMatch(/7 days/);
   });
 
-  it("extends a link once the payment verifies and settles, and records it", async () => {
+  it("settles the payment on chain, then extends the link, and keeps the link id out of the ledger", async () => {
     await start();
-    const { token, id: owner } = await newToken();
+    const { token } = await newToken();
     const { id } = await (await upload(token)).json();
 
-    const res = await extend(token, id, 30 * DAY, { "payment-signature": signed(oneMonth()) });
+    const res = await extend(token, id, 30 * DAY, { "payment-signature": await pay(await extend(token, id, 30 * DAY)) });
     expect(res.status).toBe(200);
     expect((await res.json()).expiresAt).toBe(new Date(clock + 30 * DAY_MS).toISOString());
-    expect(decode(res.headers.get("payment-response"))).toMatchObject({ success: true, transaction: "0xtx" });
-    expect(facilitator.verify.mock.calls[0][1]).toEqual(oneMonth());
-    expect(facilitator.settle).toHaveBeenCalledTimes(1);
+    expect(chain.submissions).toHaveLength(1);
+    expect(decode(res.headers.get("payment-response"))).toMatchObject({ success: true, transaction: chain.submissions[0], network: "eip155:84532" });
+    expect(balance(PAY_TO)).toBe(10_001n);
+    expect(balance(buyer.address)).toBe(1_000_000n - 10_001n);
 
-    const raw = await readFile(join(dir, "payments.jsonl"), "utf8");
-    expect(raw).not.toContain(id);
-    const ledger = JSON.parse(raw);
-    expect(ledger).toMatchObject({ transaction: "0xtx", payer: "0xpayer", amount: "10001", fileRef: fileRef(id), owner, seconds: 23 * DAY });
+    const rows = await ledger.list();
+    expect(rows).toMatchObject([{ status: "settled", delivered: true, amount: "10001", path: "/api/files/extend", meta: { fileRef: fileRef(id) } }]);
+    expect(JSON.stringify(rows)).not.toContain(id);
+  });
+
+  it("applies a payment once: a replay changes nothing, and can't buy time for another link", async () => {
+    await start();
+    const { token } = await newToken();
+    const a = await (await upload(token)).json();
+    const b = await (await upload(token)).json();
+    const payment = await pay(await extend(token, a.id, 30 * DAY));
+    expect((await extend(token, a.id, 30 * DAY, { "payment-signature": payment })).status).toBe(200);
+    const paidUntil = await expiryOf(token, a.id);
+
+    // The same request again: already extended, so nothing is charged or changed.
+    const again = await extend(token, a.id, 30 * DAY, { "payment-signature": payment });
+    expect(again.status).toBe(200);
+    expect(again.headers.get("payment-response")).toBeNull();
+    // The same payment for more days, or for another link, is a replay.
+    const longer = await extend(token, a.id, 40 * DAY, { "payment-signature": payment });
+    expect(longer.status).toBe(409);
+    expect(await longer.json()).toMatchObject({ code: "NONCE_REPLAY" });
+    expect((await extend(token, b.id, 30 * DAY, { "payment-signature": payment })).status).toBe(409);
+
+    expect(chain.submissions).toHaveLength(1);
+    expect(balance(PAY_TO)).toBe(10_001n);
+    expect(await expiryOf(token, a.id)).toBe(paidUntil);
+    expect(await expiryOf(token, b.id)).toBe(b.expiresAt);
   });
 
   it("only charges for time past what the link already has", async () => {
     await start();
     const { token } = await newToken();
     const { id } = await (await upload(token)).json();
-    await extend(token, id, 30 * DAY, { "payment-signature": signed(oneMonth()) });
+    await extend(token, id, 30 * DAY, { "payment-signature": await pay(await extend(token, id, 30 * DAY)) });
 
     // Already paid through day 30; 40 days out needs one more started month.
     const res = await extend(token, id, 40 * DAY);
     expect(decode(res.headers.get("payment-required")).accepts[0].amount).toBe("10001");
   });
 
-  it("rejects a payment signed for a different amount without asking the facilitator", async () => {
+  it("refuses a payment for the wrong amount or with a bad signature, leaving the link alone", async () => {
     await start();
     const { token } = await newToken();
-    const { id } = await (await upload(token)).json();
-    const res = await extend(token, id, 30 * DAY, { "payment-signature": signed(requirementsFor(X402, 1)) });
-    expect(res.status).toBe(402);
-    expect(decode(res.headers.get("payment-required")).error).toMatch(/does not match/);
-    expect(facilitator.verify).not.toHaveBeenCalled();
+    const { id, expiresAt } = await (await upload(token)).json();
+    const quote = await extend(token, id, 30 * DAY);
+
+    const under = await extend(token, id, 30 * DAY, { "payment-signature": await pay(quote.clone(), { amount: "1" }) });
+    expect(under.status).toBe(402);
+    expect((await under.json()).code).toMatch(/UNDERPAID|AMOUNT_MISMATCH/);
+    expect(decode(under.headers.get("payment-required")).accepts[0].amount).toBe("10001");
+
+    // Signed by another key, but claiming to come from the funded buyer.
+    const accepted = decode(quote.headers.get("payment-required")).accepts[0];
+    const { payload } = await evmX402Signer(`0x${"22".repeat(32)}`, () => clock).signX402(accepted);
+    const authorization = { ...(payload.authorization as Record<string, string>), from: buyer.address };
+    const forged = encodePaymentSignature({ x402Version: 2, accepted, payload: { ...payload, authorization } });
+    expect((await extend(token, id, 30 * DAY, { "payment-signature": forged })).status).toBe(402);
     expect((await extend(token, id, 30 * DAY, { "payment-signature": "%%%" })).status).toBe(400);
+
+    expect(chain.submissions).toHaveLength(0);
+    expect(await expiryOf(token, id)).toBe(expiresAt);
   });
 
-  it("leaves the link alone when the payment doesn't verify", async () => {
+  it("refuses a payer who can't cover the price, leaving the link alone", async () => {
     await start();
-    facilitator.verify.mockResolvedValueOnce({ isValid: false, invalidReason: "insufficient_funds" });
+    chain.burn(buyer.address);
     const { token } = await newToken();
     const { id, expiresAt } = await (await upload(token)).json();
-    const res = await extend(token, id, 30 * DAY, { "payment-signature": signed(oneMonth()) });
+    const res = await extend(token, id, 30 * DAY, { "payment-signature": await pay(await extend(token, id, 30 * DAY)) });
     expect(res.status).toBe(402);
-    expect(decode(res.headers.get("payment-required")).error).toBe("insufficient_funds");
-    expect(facilitator.settle).not.toHaveBeenCalled();
-    const files = (await (await fetch(`${base}/api/files`, { headers: bearer(token) })).json()).files;
-    expect(files[0].expiresAt).toBe(expiresAt);
-  });
-
-  it("undoes the extension when settlement fails", async () => {
-    await start();
-    facilitator.settle.mockResolvedValueOnce({ success: false, errorReason: "nonce_used", transaction: "", network: X402.network });
-    const { token } = await newToken();
-    const { id, expiresAt } = await (await upload(token)).json();
-    const res = await extend(token, id, 30 * DAY, { "payment-signature": signed(oneMonth()) });
-    expect(res.status).toBe(402);
-    expect(decode(res.headers.get("payment-required")).error).toBe("nonce_used");
-    const files = (await (await fetch(`${base}/api/files`, { headers: bearer(token) })).json()).files;
-    expect(files[0].expiresAt).toBe(expiresAt);
-  });
-
-  it("keeps the extension and records a pending payment when settlement has no clear answer", async () => {
-    await start();
-    facilitator.settle.mockRejectedValueOnce(new HttpError(502, "The payment service failed; try again shortly"));
-    facilitator.settle.mockResolvedValueOnce({ success: true, transaction: "", network: X402.network });
-    const { token } = await newToken();
-    const a = await (await upload(token)).json();
-    const b = await (await upload(token)).json();
-
-    for (const { id } of [a, b]) {
-      const res = await extend(token, id, 30 * DAY, { "payment-signature": signed(oneMonth()) });
-      expect(res.status).toBe(200);
-      expect(await res.json()).toMatchObject({ paymentStatus: "pending", expiresAt: new Date(clock + 30 * DAY_MS).toISOString() });
-    }
-    const ledger = (await readFile(join(dir, "payments.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
-    expect(ledger).toMatchObject([{ status: "pending", nonce: "0x1", payer: "0xpayer" }, { status: "pending" }]);
-  });
-
-  it("refuses to use one signed payment for two links at once", async () => {
-    await start();
-    let release!: () => void;
-    facilitator.verify.mockImplementationOnce(() => new Promise((r) => { release = () => r({ isValid: true }); }));
-    const { token } = await newToken();
-    const a = await (await upload(token)).json();
-    const b = await (await upload(token)).json();
-    const first = extend(token, a.id, 30 * DAY, { "payment-signature": signed(oneMonth()) });
-    await vi.waitFor(() => expect(facilitator.verify).toHaveBeenCalled());
-    expect((await extend(token, b.id, 30 * DAY, { "payment-signature": signed(oneMonth()) })).status).toBe(409);
-    release();
-    expect((await first).status).toBe(200);
+    expect((await res.json()).code).toBe("INSUFFICIENT_FUNDS");
+    expect(chain.submissions).toHaveLength(0);
+    expect(await expiryOf(token, id)).toBe(expiresAt);
   });
 
   it("quotes paid time to the hour, so a quote survives the round trip to the wallet", async () => {
     await start();
     const { token } = await newToken();
     const { id } = await (await upload(token)).json();
-    const quote = decode((await extend(token, id, 30 * DAY)).headers.get("payment-required")).accepts[0];
+    const quote = await extend(token, id, 30 * DAY);
     clock += 10 * 60_000;
-    const res = await extend(token, id, 30 * DAY - 600, { "payment-signature": signed(quote) });
+    const res = await extend(token, id, 30 * DAY - 600, { "payment-signature": await pay(quote) });
     expect(res.status).toBe(200);
   });
 
-  it("refuses a second extension of the same link while a payment is in flight", async () => {
+  it("refuses a second extension of the same link while a payment settles", async () => {
     await start();
-    let release!: () => void;
-    facilitator.verify.mockImplementationOnce(() => new Promise((r) => { release = () => r({ isValid: true }); }));
     const { token } = await newToken();
     const { id } = await (await upload(token)).json();
-    const first = extend(token, id, 30 * DAY, { "payment-signature": signed(oneMonth()) });
-    await vi.waitFor(() => expect(facilitator.verify).toHaveBeenCalled());
+    const payment = await pay(await extend(token, id, 30 * DAY));
+    const held = chain.pauseNextSimulation();
+    const first = extend(token, id, 30 * DAY, { "payment-signature": payment });
+    await held.reached;
     expect((await extend(token, id, 6 * DAY)).status).toBe(409);
-    release();
+    held.release();
     expect((await first).status).toBe(200);
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("lets the admin give a token Pro, which raises its limits", async () => {

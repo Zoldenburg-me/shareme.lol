@@ -9,9 +9,15 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "markdown-it": "^14.3.2"
+    "@zold/accept": "file:vendor/zold-accept-0.1.0.tgz",
+    "agentpay-hub": "file:vendor/agentpay-hub-0.1.0.tgz",
+    "markdown-it": "^14.3.2",
+    "viem": "^2.57.3"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.2.0"
+  },
+  "engines": {
+    "node": ">=22.13"
   }
 }
