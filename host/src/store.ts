@@ -201,9 +201,17 @@ export class FileStore {
     return [...this.index.values()].reduce((sum, m) => sum + m.size, 0);
   }
 
-  /** Move a live file's expiry; undefined if the file is gone or already expired at `now`. */
-  async setExpiry(id: string, expiresAt: number, now: number): Promise<FileMeta | undefined> {
-    const meta = this.get(id, now);
+  /** Every file still on disk, expired-but-unswept included. */
+  onDisk(): readonly FileMeta[] {
+    return [...this.index.values()];
+  }
+
+  /**
+   * Move a live file's expiry; undefined if the file is gone or already expired at `now`. `revive` also
+   * moves an expired file not yet swept (a paid extension that settled after the link's old expiry).
+   */
+  async setExpiry(id: string, expiresAt: number, now: number, revive = false): Promise<FileMeta | undefined> {
+    const meta = revive && isValidId(id) ? this.index.get(id) : this.get(id, now);
     if (!meta) return undefined;
     const updated: FileMeta = { ...meta, expiresAt };
     try {
@@ -245,8 +253,9 @@ export class FileStore {
     return ids.length;
   }
 
-  async sweep(now: number): Promise<string[]> {
-    const expired = [...this.index.values()].filter((m) => m.expiresAt <= now).map((m) => m.id);
+  /** Delete expired files, except those `keep` holds (e.g. a payment for them is still settling). */
+  async sweep(now: number, keep: (meta: FileMeta) => boolean = () => false): Promise<string[]> {
+    const expired = [...this.index.values()].filter((m) => m.expiresAt <= now && !keep(m)).map((m) => m.id);
     const removed: string[] = [];
     for (const id of expired) {
       try {

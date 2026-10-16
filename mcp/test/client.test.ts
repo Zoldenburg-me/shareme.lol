@@ -49,6 +49,16 @@ describe("HostClient.extend", () => {
     });
   });
 
+  it("waits past the host's settlement window, and warns not to pay again when it still times out", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    const client = new HostClient("https://h", "sm_t", fetchImpl as unknown as typeof fetch);
+    await expect(client.extend(link.id, 3600, "PAYLOAD==")).rejects.toThrow(/may still settle.*same payment to check, and don.t sign a new one/);
+    const signal = (fetchImpl.mock.calls[0][1] as RequestInit).signal as AbortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    // Without a payment nothing can have moved: the plain error.
+    await expect(client.extend(link.id, 3600)).rejects.toThrow(/^Could not reach share host at https:\/\/h: The operation was aborted due to timeout$/);
+  });
+
   it("treats a 402 without a payment header as an error", async () => {
     const client = new HostClient("https://h", "t", vi.fn().mockResolvedValue(json(402, { error: "nope" })) as unknown as typeof fetch);
     await expect(client.extend(link.id, 3600)).rejects.toThrow(/402: nope/);

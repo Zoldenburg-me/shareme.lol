@@ -1,5 +1,6 @@
 import { chmodSync, closeSync, existsSync, openSync } from "node:fs";
 import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { accept, viemChain, viemSubmitter, type AcceptDeps, type AcceptOptions, type Acceptor, type SellerLedgerPort } from "@zold/accept";
 import { openSqlite, SqliteRateLimiter, SqliteSellerLedger, SqliteSingleUseStore } from "@zold/accept/sqlite";
 import { createPublicClient, createWalletClient, http } from "viem";
@@ -10,15 +11,39 @@ import type { X402Config } from "./x402Config.js";
 /** How this host takes payments: @zold/accept verifies, settles on chain itself and delivers once. */
 export interface Payments {
   readonly acceptor: Acceptor;
-  /** The acceptor's ledger: settled payments whose request ended before delivery are delivered from it. */
+  /** The acceptor's ledger. Its `delivered` flag is set before the link is extended, so the host keeps its own `acks`. */
   readonly ledger: SellerLedgerPort;
+  readonly acks: ExtensionAcks;
+  /** Ids of links with a payment request in flight here: the sweep keeps them. */
+  readonly paying: Set<string>;
 }
+
+/** Settled payments whose link this host has extended, written only once the extension is on disk. */
+export class ExtensionAcks {
+  constructor(private readonly db: DatabaseSync) {
+    db.exec("CREATE TABLE IF NOT EXISTS share_extension_acks (claim_key TEXT PRIMARY KEY, at INTEGER NOT NULL) STRICT");
+  }
+
+  has(claimKey: string): boolean {
+    return this.db.prepare("SELECT 1 FROM share_extension_acks WHERE claim_key = ?").get(claimKey) !== undefined;
+  }
+
+  add(claimKey: string, at: number): void {
+    this.db.prepare("INSERT OR IGNORE INTO share_extension_acks (claim_key, at) VALUES (?, ?)").run(claimKey, at);
+  }
+}
+
+/** Part of every claim key: retries are matched to their ledger row with it. */
+export const SELLER_ACCOUNT_ID = "share-me";
 
 const MONTH_SECONDS = 30 * 86_400;
 const GIBIBYTE = 1024 ** 3;
 const DB_FILE = "payments.db";
-// Settlements in flight at once, across all tokens; each polls the chain for up to a minute.
+// Settlements in flight at once, across all tokens; each polls the chain for up to SETTLEMENT_WAIT_MS.
 const MAX_PAYMENTS_IN_FLIGHT = 8;
+// How long a request waits for confirmations before answering "pending" (Base: ~2 s blocks, 2 confirmations).
+// Kept well under the MCP client's extend timeout; the reconciler delivers whatever settles later.
+export const SETTLEMENT_WAIT_MS = 20_000;
 const ADDRESS = /0x[0-9a-fA-F]{40}/g;
 const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
 // The ledger names payers next to what they paid for (personal data): owner-only, like tokens.json.
@@ -42,7 +67,7 @@ export function formatAmount(amount: number, decimals: number): string {
 export function acceptOptions(config: X402Config, publicBaseUrl: string): AcceptOptions {
   const origin = new URL(publicBaseUrl);
   return {
-    sellerAccountId: "share-me",
+    sellerAccountId: SELLER_ACCOUNT_ID,
     payTo: config.payTo,
     chainId: config.chainId,
     asset: config.asset,
@@ -53,6 +78,7 @@ export function acceptOptions(config: X402Config, publicBaseUrl: string): Accept
     ...(origin.protocol === "https:" ? { publicOrigin: origin.origin } : {}),
     maxTimeoutSeconds: config.maxTimeoutSeconds,
     maxInFlight: MAX_PAYMENTS_IN_FLIGHT,
+    settlementTimeoutMs: SETTLEMENT_WAIT_MS,
   };
 }
 
@@ -107,5 +133,5 @@ export function openPayments(config: X402Config, dataDir: string, publicBaseUrl:
     }),
     onError: paymentErrorReporter(config),
   };
-  return { acceptor: accept(acceptOptions(config, publicBaseUrl), deps), ledger };
+  return { acceptor: accept(acceptOptions(config, publicBaseUrl), deps), ledger, acks: new ExtensionAcks(db), paying: new Set() };
 }
