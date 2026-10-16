@@ -2,6 +2,7 @@ import { isIPv6 } from "node:net";
 
 const HOUR_MS = 3_600_000;
 const HOURS_PER_DAY = 24;
+const DAY_MS = HOURS_PER_DAY * HOUR_MS;
 const PRUNE_ABOVE = 1000;
 const SITE_GROUPS = 3; // a /48
 const SITE_FACTOR = 2;
@@ -14,8 +15,8 @@ const SITE_FACTOR = 2;
  */
 export class SignupLimiter {
   private byIp: ReadonlyMap<string, readonly number[]> = new Map();
-  // Signups per clock hour (hour number -> count) over the last 24 hours.
-  private hours: ReadonlyMap<number, number> = new Map();
+  // Times of the signups in the last 24 hours; never more than perDay of them.
+  private lastDay: readonly number[] = [];
   private readonly perHour: number;
 
   constructor(
@@ -28,9 +29,8 @@ export class SignupLimiter {
   /** Returns true and records the signup if it is within all limits. */
   allow(ip: string, now: number): boolean {
     const hour = Math.floor(now / HOUR_MS);
-    const hours = new Map([...this.hours].filter(([h]) => hour - h < HOURS_PER_DAY));
-    const thisHour = hours.get(hour) ?? 0;
-    const lastDay = [...hours.values()].reduce((sum, n) => sum + n, 0);
+    const lastDay = this.lastDay.filter((t) => now - t < DAY_MS);
+    const thisHour = lastDay.filter((t) => Math.floor(t / HOUR_MS) === hour).length;
     // An IPv6 /48 (one site) gets twice a /64's allowance; for IPv4 both keys are the same address.
     const limits = new Map([
       [networkOf(ip, SITE_GROUPS), SITE_FACTOR * this.perIpPerHour],
@@ -38,8 +38,8 @@ export class SignupLimiter {
     ]);
     const recent = new Map([...limits.keys()].map((k) => [k, (this.byIp.get(k) ?? []).filter((t) => now - t < HOUR_MS)]));
     const networkFull = [...limits].some(([k, limit]) => (recent.get(k)?.length ?? 0) >= limit);
-    if (networkFull || thisHour >= this.perHour || lastDay >= this.perDay) return false;
-    this.hours = new Map([...hours, [hour, thisHour + 1]]);
+    if (networkFull || thisHour >= this.perHour || lastDay.length >= this.perDay) return false;
+    this.lastDay = [...lastDay, now];
     const recorded = [...recent].map(([k, times]): [string, readonly number[]] => [k, [...times, now]]);
     this.byIp = this.prune(new Map([...this.byIp, ...recorded]), now);
     return true;
