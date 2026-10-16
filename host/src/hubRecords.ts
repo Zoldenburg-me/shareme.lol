@@ -48,9 +48,9 @@ export class HubPaymentRecords {
       .run(key, fileRef, until, amount.toString(), now);
   }
 
-  /** The hub took the payment and is still settling it: keep its link until a retry delivers it. */
-  markHeld(key: string): void {
-    this.db.prepare("UPDATE hub_payments SET held = 1 WHERE key = ?").run(key);
+  /** The hub took the payment, or its outcome isn't known: keep this link until a retry delivers it. */
+  markHeld(key: string, fileRef: string): void {
+    this.db.prepare("UPDATE hub_payments SET held = 1 WHERE key = ? AND file_ref = ?").run(key, fileRef);
   }
 
   /** The hub refused this payment outright: forget it and release its link, unless it was delivered or is another link's. */
