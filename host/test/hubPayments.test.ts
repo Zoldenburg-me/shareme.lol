@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accept, FakeFiatToken, hostedSettle } from "@zold/accept";
+import { accept, FakeFiatToken, hostedSettle, parseAcceptOptions } from "@zold/accept";
 import { openSqlite, SqliteRateLimiter, SqliteSellerLedger, SqliteSingleUseStore } from "@zold/accept/sqlite";
 import type { DatabaseSync } from "node:sqlite";
 import { evmX402Signer } from "agentpay-hub";
@@ -16,7 +16,8 @@ import { createLegacyDelivery, fileRef, paymentHolds } from "../src/extend.js";
 import { SignupLimiter } from "../src/signupLimiter.js";
 import { FileStore } from "../src/store.js";
 import { TokenStore } from "../src/tokens.js";
-import { acceptOptions, assertNoOpenLegacy, openHubPayments, type HubPayments } from "../src/x402.js";
+import { HubPaymentRecords } from "../src/hubRecords.js";
+import { acceptOptions, assertNoOpenLegacy, HUB_TIMEOUT_MS, openHubPayments, type HubPayments } from "../src/x402.js";
 import type { HubSettlement, X402Config } from "../src/x402Config.js";
 
 const ADMIN = "a".repeat(40);
@@ -53,7 +54,7 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
   let store: FileStore;
   let calls: HubCall[];
   /** What the hub's network does with the next call: answer it, lose the answer after settling, or be down. */
-  let network: "up" | "lose-answer" | "down";
+  let network: "up" | "lose-answer" | "down" | "rate-limited";
   const buyer = evmX402Signer(generatePrivateKey(), () => clock);
 
   /** The hub: @zold/accept's real hostedSettle route over its own acceptor, ledger and (fake) chain. */
@@ -67,6 +68,10 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
     const settle = hostedSettle({ acceptorFor: (key) => (key === HUB.key ? acceptor : undefined), onError: () => undefined });
     return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       if (network === "down") throw new TypeError("fetch failed");
+      if (network === "rate-limited") {
+        const limited = { kind: "respond", status: 429, headers: { "retry-after": "60" }, body: JSON.stringify({ error: "RATE_LIMITED" }) };
+        return new Response(JSON.stringify(limited), { status: 200 });
+      }
       const headers = init?.headers as Record<string, string>;
       const body = JSON.parse(String(init?.body));
       calls.push({ url: String(url), authorization: headers.authorization, body });
@@ -259,12 +264,72 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
     expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([id]);
   });
 
-  it("holds nothing for a payment whose answer was lost, but still retries it at its first price", async () => {
+  it("holds the link of a payment whose answer was lost, and extends it when the payer retries after expiry", async () => {
     const { token, id } = await start(newHub());
     const payment = await pay(await extend(token, id));
-    network = "lose-answer";
+    const until = new Date(clock + 30 * DAY_MS).toISOString();
+    network = "lose-answer"; // the hub settles, but its answer never arrives (like a host timeout)
     expect((await extend(token, id, { "payment-signature": payment })).status).toBe(503);
-    expect(await isHeld(id)).toBe(false);
+    expect(await isHeld(id)).toBe(true);
+    clock += 2 * DAY_MS;
+    expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([]);
+    network = "up";
+    const retry = await extend(token, id, { "payment-signature": payment });
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).expiresAt).toBe(until);
+    expect(chain.submissions).toHaveLength(1);
+  });
+
+  it("keeps a held payment and its first price through a rate-limited retry", async () => {
+    chain = newChain(false);
+    clock += 60_000;
+    const { token, id } = await start(newHub());
+    const payment = await pay(await extend(token, id));
+    const until = new Date(Math.ceil((clock + 30 * DAY_MS) / 3_600_000) * 3_600_000).toISOString();
+    expect((await extend(token, id, { "payment-signature": payment })).status).toBe(503); // still settling
+    network = "rate-limited";
+    const limited = await extend(token, id, { "payment-signature": payment });
+    expect(limited.status).toBe(429);
+    expect(await limited.json()).toMatchObject({ code: "RATE_LIMITED", paymentStatus: "pending" });
+    expect(await isHeld(id)).toBe(true);
+    chain.mine(3);
+    clock += 2 * 3_600_000; // a fresh price would end two hours later
+    network = "up";
+    const retry = await extend(token, id, { "payment-signature": payment });
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).expiresAt).toBe(until);
+  });
+
+  it("holds a link the hub was paid for until it is extended, so a failure in between is retried", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { token, id } = await start(newHub());
+    const payment = await pay(await extend(token, id));
+    const until = new Date(clock + 30 * DAY_MS).toISOString();
+    vi.spyOn(store, "setExpiry").mockRejectedValueOnce(new Error("disk full"));
+    expect((await extend(token, id, { "payment-signature": payment })).status).toBe(500);
+    expect(await isHeld(id)).toBe(true);
+    clock += 2 * DAY_MS;
+    expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([]);
+    const retry = await extend(token, id, { "payment-signature": payment });
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).expiresAt).toBe(until);
+    expect(chain.submissions).toHaveLength(1);
+    log.mockRestore();
+  });
+
+  it("waits for the hub longer than the hub waits for confirmations, and less than the MCP client waits", () => {
+    const { settlementTimeoutMs: _ours, ...hubDefaults } = acceptOptions(X402, "https://shareme.lol");
+    expect(HUB_TIMEOUT_MS).toBeGreaterThan(parseAcceptOptions(hubDefaults).settlementTimeoutMs);
+    expect(HUB_TIMEOUT_MS).toBeLessThan(90_000); // mcp/src/client.ts EXTEND_TIMEOUT_MS
+  });
+
+  it("holds only the link a payment was recorded for", () => {
+    const records = new HubPaymentRecords(openSqlite(":memory:"));
+    records.remember("k", "linkA", 1, 1n, 0);
+    records.markHeld("k", "linkB");
+    expect(records.undeliveredRefs()).toEqual(new Set());
+    records.markHeld("k", "linkA");
+    expect(records.undeliveredRefs()).toEqual(new Set(["linkA"]));
   });
 
   describe("after a switch from settling here", () => {

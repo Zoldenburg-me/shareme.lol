@@ -47,8 +47,10 @@ const MAX_PAYMENTS_IN_FLIGHT = 8;
 // How long a request waits for confirmations before answering "pending" (Base: ~2 s blocks, 2 confirmations).
 // Kept well under the MCP client's extend timeout; the reconciler delivers whatever settles later.
 export const SETTLEMENT_WAIT_MS = 20_000;
-// How long a request waits for the hub: under the MCP client's 90 s extend timeout and Cloudflare's 100 s.
-const HUB_TIMEOUT_MS = 25_000;
+// How long a request waits for the hub: longer than the hub's own wait for confirmations (@zold/accept's
+// default settlementTimeoutMs, 60 s), so a slow settlement still answers this request, and under the MCP
+// client's 90 s extend timeout and Cloudflare's 100 s.
+export const HUB_TIMEOUT_MS = 75_000;
 /** How long a payment sent to a hub can be retried at its first price; the sweep prunes older records. */
 export const HUB_RECORD_DAYS = 30;
 const ADDRESS = /0x[0-9a-fA-F]{40}/g;

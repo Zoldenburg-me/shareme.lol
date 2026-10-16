@@ -63,6 +63,9 @@ function pending(mode: Payments["mode"], code: string, headers: Record<string, s
     `${HUB_RETRY} The link is extended when a retry finds the payment settled.`, retryAfter, { code, paymentStatus: "pending" });
 }
 
+/** A refusal no retry of the same payment can turn into a payment: 400, 402, or the payment was used for another link. */
+const definitive = (result: Refusal) => result.status === 400 || result.status === 402 || codeOf(result) === "NONCE_REPLAY";
+
 function codeOf(result: Refusal): string {
   let parsed: unknown;
   try {
@@ -81,6 +84,9 @@ function refused(x402: X402Config, result: Refusal, amount: number, mode: Paymen
   const code = codeOf(result);
   // Any 5xx may come after a broadcast; retrying the same payment is always safe, paying again is not.
   if (PENDING_CODES.has(code) || result.status >= 500) return pending(mode, code, headers, withPayment);
+  if (mode === "hub" && withPayment && result.status === 429) {
+    return new HttpError(429, `Too many attempts with this payment right now. Wait for Retry-After, then: ${HUB_RETRY}`, headers, { code, paymentStatus: "pending" });
+  }
   if (code === "NONCE_REPLAY" && mode === "hub") {
     return new HttpError(409, "This payment was already used for another link; get a new quote for this one.", headers, { code });
   }
@@ -248,11 +254,11 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     }
     if (result.kind === "respond") {
       if (key !== undefined) {
-        const code = codeOf(result);
-        // Only a payment the hub is settling holds its link; one it refused (bad signature, no funds,
-        // wrong amount) holds nothing. Without an answer the record stays, unheld, so a retry keeps its price.
-        if (PENDING_CODES.has(code)) pay.records.markHeld(key);
-        else if (result.status < 500) pay.records.forget(key, price.meta.fileRef);
+        // A payment the hub refused for good (bad signature, no funds, wrong amount, used elsewhere) holds
+        // nothing. Anything else (still settling, rate limited, no answer in time) may have moved money:
+        // hold the link, at its first price, until the payer's retry resolves it.
+        if (definitive(result)) pay.records.forget(key, price.meta.fileRef);
+        else pay.records.markHeld(key, price.meta.fileRef);
       }
       throw refused(x402, result, Number(price.amount), "hub", header !== undefined);
     }
@@ -260,6 +266,8 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
       pay.reportError(new Error(`the hub answered paid on chain ${result.paid.chainId} in ${result.paid.asset}, not in this host's asset`));
       throw new HttpError(502, "The payment service answered for another chain or token, so nothing was extended. Contact support; don't pay again.");
     }
+    // Held until extended: if the process dies or the extension fails now, the sweep keeps the link for the retry.
+    if (key !== undefined) pay.records.markHeld(key, price.meta.fileRef);
     let extended: FileMeta;
     try {
       extended = await extendTo(store, meta.id, Number(price.meta.until), now());
