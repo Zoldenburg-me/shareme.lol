@@ -3,12 +3,13 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   accept, viemChain, viemSubmitter, zoldSeller,
-  type AcceptDeps, type AcceptOptions, type Acceptor, type PaymentHandler, type Price, type SellerLedgerPort,
+  type AcceptDeps, type AcceptOptions, type AcceptResult, type Acceptor, type Price, type ReqLike, type SellerLedgerPort,
 } from "@zold/accept";
 import { openSqlite, SqliteRateLimiter, SqliteSellerLedger, SqliteSingleUseStore } from "@zold/accept/sqlite";
 import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
+import { HubPaymentRecords } from "./hubRecords.js";
 import type { HubSettlement, SelfSettlement, X402Config } from "./x402Config.js";
 
 /** This host settles: @zold/accept verifies, settles on chain itself and delivers once. */
@@ -22,13 +23,14 @@ export interface LocalPayments {
 }
 
 /**
- * A Zold hub settles and keeps the ledger. This host keeps no payment state: a payment is delivered when the
- * hub answers paid, and a retry of the same payment is priced again and answered by the hub's replay.
+ * A Zold hub settles and keeps the ledger. This host keeps only the price each payment was first sent at
+ * (HubPaymentRecords), so a retry of the same payment is replayed by the hub at that price.
  */
 export interface HubPayments {
   readonly mode: "hub";
-  /** zoldSeller for one request at its price (zoldSeller prices from headers only; extensions are priced per link). */
-  readonly sellerFor: (price: Price) => PaymentHandler;
+  /** One request to the hub at its price; undefined when MAX_PAYMENTS_IN_FLIGHT are already out. */
+  readonly settle: (req: ReqLike, price: Price) => Promise<AcceptResult | undefined>;
+  readonly records: HubPaymentRecords;
   readonly reportError: (error: unknown) => void;
   readonly paying: Set<string>;
 }
@@ -43,6 +45,10 @@ const MAX_PAYMENTS_IN_FLIGHT = 8;
 // How long a request waits for confirmations before answering "pending" (Base: ~2 s blocks, 2 confirmations).
 // Kept well under the MCP client's extend timeout; the reconciler delivers whatever settles later.
 export const SETTLEMENT_WAIT_MS = 20_000;
+// How long a request waits for the hub: under the MCP client's 90 s extend timeout and Cloudflare's 100 s.
+const HUB_TIMEOUT_MS = 25_000;
+/** How long a payment sent to a hub can be retried at its first price; the sweep prunes older records. */
+export const HUB_RECORD_DAYS = 30;
 const ADDRESS = /0x[0-9a-fA-F]{40}/g;
 // Shorter URL parts ("v2", "rpc") aren't credentials, and masking them would garble messages.
 const MIN_SECRET_LENGTH = 8;
@@ -140,18 +146,30 @@ function openPrivateDb(dataDir: string) {
 }
 
 /** Hosted settlement: every paid request goes to the hub's POST /api/agent-payments/settle. */
-export function openHubPayments(config: X402Config, hub: HubSettlement, fetchImpl?: typeof fetch): HubPayments {
+export function openHubPayments(config: X402Config, hub: HubSettlement, dataDir: string, fetchImpl?: typeof fetch): HubPayments {
   const onError = paymentErrorReporter(config);
-  const sellerFor = (price: Price) =>
-    zoldSeller({ apiUrl: hub.url, apiKey: hub.key, price: () => price, onError, ...(fetchImpl ? { fetch: fetchImpl } : {}) });
+  // zoldSeller prices from headers only, and extensions are priced per link: one per request, at its price.
+  const sellerFor = (price: Price) => zoldSeller({
+    apiUrl: hub.url, apiKey: hub.key, price: () => price, onError, timeoutMs: HUB_TIMEOUT_MS, ...(fetchImpl ? { fetch: fetchImpl } : {}),
+  });
   sellerFor({ amount: 1n }); // zoldSeller checks its options when made: fail at startup, not on the first payment
-  return { mode: "hub", sellerFor, reportError: onError, paying: new Set() };
+  let inFlight = 0;
+  const settle = async (req: ReqLike, price: Price) => {
+    if (inFlight >= MAX_PAYMENTS_IN_FLIGHT) return undefined;
+    inFlight += 1;
+    try {
+      return await sellerFor(price).handle(req);
+    } finally {
+      inFlight -= 1;
+    }
+  };
+  return { mode: "hub", settle, records: new HubPaymentRecords(openPrivateDb(dataDir)), reportError: onError, paying: new Set() };
 }
 
 /** Production wiring: a hub if one is configured, else Base Sepolia over the configured RPC with every store in <dataDir>/payments.db. */
 export function openPayments(config: X402Config, dataDir: string, publicBaseUrl: string): Payments {
   const s = config.settlement;
-  return s.kind === "hub" ? openHubPayments(config, s) : openLocalPayments(config, s, dataDir, publicBaseUrl);
+  return s.kind === "hub" ? openHubPayments(config, s, dataDir) : openLocalPayments(config, s, dataDir, publicBaseUrl);
 }
 
 function openLocalPayments(config: X402Config, s: SelfSettlement, dataDir: string, publicBaseUrl: string): LocalPayments {
