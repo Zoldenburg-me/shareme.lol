@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { toReqLike, type AcceptResult, type SellerPayment } from "@zold/accept";
-import { decodePaymentSignature, singleUseKey } from "agentpay-hub/protocol";
 import type { HostConfig } from "./config.js";
 import { clientIp, HttpError, readJson } from "./http.js";
 import type { Principal } from "./plans.js";
 import type { FileMeta, FileStore } from "./store.js";
-import { formatAmount, priceFor, SELLER_ACCOUNT_ID, type Payments } from "./x402.js";
+import { formatAmount, priceFor, type Payments } from "./x402.js";
 import type { X402Config } from "./x402Config.js";
 
 export interface Extended {
@@ -91,23 +90,21 @@ async function extendTo(store: FileStore, id: string, until: number, now: number
   return meta;
 }
 
-/** Extends the link a settled payment bought, then records that durably; safe to repeat. */
+/**
+ * Extends the link a settled payment bought, then marks it delivered (payments are handled with
+ * deferDelivery). Delivery is at-least-once, so this is safe to repeat: extendTo never shortens.
+ */
 async function deliverPayment(store: FileStore, payments: Payments, id: string, row: Pick<SellerPayment, "claimKey" | "meta">, now: number) {
   const meta = await extendTo(store, id, Number(row.meta.until), now);
-  payments.acks.add(row.claimKey, now);
+  await payments.acceptor.confirmDelivery(row.claimKey);
   return meta;
-}
-
-/** Settled payments whose link this host hasn't extended yet, and payments still settling. */
-async function unfinished(payments: Payments): Promise<readonly SellerPayment[]> {
-  // shortcut: scans the whole ledger each run; keep an index of unacked rows once it holds many thousands.
-  return (await payments.ledger.list()).filter((row) =>
-    row.status === "owed" || row.status === "submitted" || (row.status === "settled" && !payments.acks.has(row.claimKey)));
 }
 
 /** What the sweep must keep: links with a payment in flight, still settling, or settled but not yet extended. */
 export async function paymentHolds(payments: Payments): Promise<(meta: FileMeta) => boolean> {
-  const held = new Set((await unfinished(payments)).map((row) => row.meta.fileRef));
+  // shortcut: the ledger has no query for open rows, so this scans it; add one once it holds many thousands.
+  const open = (await payments.ledger.list()).filter((row) => row.status === "owed" || row.status === "submitted");
+  const held = new Set([...open, ...(await payments.ledger.undelivered())].map((row) => row.meta.fileRef));
   return (meta) => payments.paying.has(meta.id) || held.has(fileRef(meta.id));
 }
 
@@ -121,7 +118,7 @@ export function createReconciler(store: FileStore, payments: Payments) {
   const reported = new Set<string>();
 
   async function deliver(now: number): Promise<number> {
-    const owed = (await unfinished(payments)).filter((row) => row.status === "settled");
+    const owed = await payments.ledger.undelivered();
     if (owed.length === 0) return 0;
     const onDisk = new Map(store.onDisk().map((meta) => [fileRef(meta.id), meta]));
     let delivered = 0;
@@ -154,20 +151,10 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     return meta;
   }
 
-  /** The ledger row of the payment this request carries, if this host has seen it before. */
+  /** The ledger row of the payment this request carries, if this host has seen it before (only to price it). */
   async function priorPayment(req: IncomingMessage): Promise<SellerPayment | undefined> {
     const header = req.headers["payment-signature"];
-    if (!config.x402 || !payments || typeof header !== "string") return undefined;
-    try {
-      const authorization = decodePaymentSignature(header).payload.authorization as { from?: unknown; nonce?: unknown } | undefined;
-      const claimKey = singleUseKey({
-        sellerAccountId: SELLER_ACCOUNT_ID, chainId: config.x402.chainId, asset: config.x402.asset,
-        from: String(authorization?.from), nonce: String(authorization?.nonce),
-      });
-      return await payments.ledger.get(claimKey);
-    } catch {
-      return undefined; // malformed: handle() refuses it with the right code
-    }
+    return payments && typeof header === "string" ? payments.acceptor.lookup(header) : undefined;
   }
 
   /** Takes the payment for `target` at `price`, then extends the link and records the delivery. */
@@ -176,7 +163,8 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     pay.paying.add(meta.id);
     try {
       // Settles on chain before it returns: the link is only extended once the money has moved.
-      const result = await pay.acceptor.handle(request, { price });
+      // deferDelivery: marked delivered only once the link is extended, so a failure here is retried.
+      const result = await pay.acceptor.handle(request, { price, deferDelivery: true });
       if (result.kind === "respond") throw refused(x402, result, Number(price.amount));
       return { meta: await deliverPayment(store, pay, meta.id, { claimKey: result.paid.claimKey, meta: price.meta }, now()), headers: result.headers };
     } finally {
@@ -206,7 +194,7 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     const x402 = config.x402 as X402Config;
     const pay = payments as Payments;
     const target = Number(row.meta.until);
-    if (pay.acks.has(row.claimKey) && target <= meta.expiresAt) return { meta, headers: {} };
+    if (row.delivered && target <= meta.expiresAt) return { meta, headers: {} };
     return settle(req, meta, target, { amount: BigInt(row.amount), meta: { ...row.meta } }, pay, x402);
   }
 

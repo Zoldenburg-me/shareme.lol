@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HttpRequestError } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { acceptOptions, formatAmount, openPayments, paymentErrorReporter, priceFor, redact } from "../src/x402.js";
+import { acceptOptions, formatAmount, openPayments, priceFor, reportPaymentError } from "../src/x402.js";
 import { loadX402Config, type X402Config } from "../src/x402Config.js";
 
 const PAY_TO = "0x" + "ab".repeat(20);
@@ -87,24 +87,26 @@ describe("x402 pricing and wiring", () => {
     expect(() => acceptOptions(cfg, "https://shareme.lol").price({ method: "POST", path: "/", headers: {} })).toThrow();
   });
 
-  it("logs an RPC failure with its code, without the RPC URL's key, the gas key or payer addresses", () => {
+  it("logs an RPC failure with its code, without the RPC URL's key or payer addresses", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const config = { ...cfg, rpcUrl: "https://sepolia.example/v2/SECRETKEY" };
-    // What viem throws when the RPC is down: its message carries the full URL.
-    const rpcDown = new HttpRequestError({ url: config.rpcUrl, details: "fetch failed", body: { method: "eth_blockNumber" } });
-    expect(rpcDown.message).toContain("SECRETKEY");
-    paymentErrorReporter(config)(rpcDown);
-    paymentErrorReporter(config)(Object.assign(new Error(`payment share-me|84532|0xa|${PAY_TO}|0x1 via ${GAS_KEY}`), { code: "SETTLEMENT_UNKNOWN" }));
-    const logged = log.mock.calls.map((c) => c.join(" ")).join("\n");
-    expect(logged).toContain("payment HttpRequestError:");
-    expect(logged).toContain("https://sepolia.example/…");
-    expect(logged).toContain("payment SETTLEMENT_UNKNOWN:");
-    for (const secret of ["SECRETKEY", "/v2/", GAS_KEY, PAY_TO]) expect(logged).not.toContain(secret);
-    log.mockRestore();
-  });
-
-  it("cuts any URL in a message to scheme and host, credentials included", () => {
-    expect(redact("POST https://user:pw@rpc.example:8545/k/abc?x=1 failed", [])).toBe("POST https://rpc.example/… failed");
+    const dir = await mkdtemp(join(tmpdir(), "share-x402-"));
+    try {
+      const config = { ...cfg, rpcUrl: "https://sepolia.example/v2/SECRETKEY" };
+      const { acceptor } = openPayments(config, dir, "https://shareme.lol");
+      // What viem throws when the RPC is down: its message carries the full URL. @zold/accept cuts it.
+      const rpcDown = new HttpRequestError({ url: config.rpcUrl, details: "fetch failed", body: { method: "eth_blockNumber" } });
+      expect(rpcDown.message).toContain("SECRETKEY");
+      acceptor.reportError(rpcDown);
+      reportPaymentError(Object.assign(new Error(`payment share-me|84532|0xa|${PAY_TO}|0x1`), { code: "SETTLEMENT_UNKNOWN" }));
+      const logged = log.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(logged).toContain("payment HttpRequestError:");
+      expect(logged).toContain("https://sepolia.example");
+      expect(logged).toContain("payment SETTLEMENT_UNKNOWN:");
+      for (const secret of ["SECRETKEY", "/v2/", PAY_TO]) expect(logged).not.toContain(secret);
+    } finally {
+      log.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("opens its stores in one SQLite file only this user can read, fixing an older readable one", async () => {
