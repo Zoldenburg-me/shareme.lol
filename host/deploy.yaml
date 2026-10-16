@@ -27,6 +27,10 @@ services:
       - SIGNUPS_PER_IP_PER_HOUR=5
       - SIGNUPS_PER_DAY=500
       - TRUST_CF_CONNECTING_IP=1    # safe: the host is only reachable through the Cloudflare Tunnel
+      # Optional: paid link extensions over x402 (Base Sepolia), settled by a Zold hub. All three, or none.
+      # - X402_PAY_TO=0x...         # the payee the hub has on record for the key
+      # - X402_HUB_URL=https://...
+      # - X402_HUB_KEY=zsk_...      # secret
       # Optional: narrow the shareable file types (default: every type the host knows)
       # - ALLOWED_EXTENSIONS=pdf,png,jpg,md,html,csv
     expose:
