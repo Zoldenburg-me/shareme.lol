@@ -257,8 +257,10 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
         // A payment the hub refused for good (bad signature, no funds, wrong amount, used elsewhere) holds
         // nothing. Anything else (still settling, rate limited, no answer in time) may have moved money:
         // hold the link, at its first price, until the payer's retry resolves it.
+        // A 429 can come before the hub has looked at the payment: it keeps a hold the hub earned
+        // earlier, but never starts one, so a rate-limited junk payment holds nothing.
         if (definitive(result)) pay.records.forget(key, price.meta.fileRef);
-        else pay.records.markHeld(key, price.meta.fileRef);
+        else if (codeOf(result) !== "RATE_LIMITED") pay.records.markHeld(key, price.meta.fileRef);
       }
       throw refused(x402, result, Number(price.amount), "hub", header !== undefined);
     }
