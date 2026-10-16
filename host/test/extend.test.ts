@@ -15,7 +15,7 @@ import { createReconciler, fileRef, paymentHolds } from "../src/extend.js";
 import { SignupLimiter } from "../src/signupLimiter.js";
 import { FileStore } from "../src/store.js";
 import { TokenStore } from "../src/tokens.js";
-import { acceptOptions, ExtensionAcks } from "../src/x402.js";
+import { acceptOptions } from "../src/x402.js";
 import type { X402Config } from "../src/x402Config.js";
 
 const ADMIN = "a".repeat(40);
@@ -93,7 +93,6 @@ describe("extending links and paying with x402", () => {
     store = await FileStore.open(dir);
     payments = {
       ledger,
-      acks: new ExtensionAcks(db),
       paying: new Set(),
       acceptor: accept({ ...acceptOptions(X402, "https://shareme.lol"), ...acceptOverrides }, {
         ledger, claims: new SqliteSingleUseStore(db), rateLimiter: new SqliteRateLimiter(db), chain, submitter: chain, onError,
@@ -333,7 +332,7 @@ describe("extending links and paying with x402", () => {
     const reconcile = createReconciler(store, payments);
     expect(await reconcile(clock)).toMatchObject({ settled: 1, delivered: 1 });
     expect(await expiryOf(token, id)).toBe(paidUntil);
-    expect(payments.acks.has((await ledger.list())[0].claimKey)).toBe(true);
+    expect(await ledger.list()).toMatchObject([{ status: "settled", delivered: true }]);
     expect(await reconcile(clock)).toMatchObject({ settled: 0, delivered: 0 });
 
     // The payer's retry with the same payment gets the receipt and changes nothing.
@@ -366,16 +365,15 @@ describe("extending links and paying with x402", () => {
     const { token } = await newToken();
     const { id } = await (await upload(token)).json();
     const payment = await pay(await extend(token, id, 30 * DAY));
-    // The payment settles (and @zold/accept marks it delivered), then writing the new expiry fails.
+    // The payment settles, then writing the new expiry fails: the payment stays undelivered.
     vi.spyOn(store, "setExpiry").mockRejectedValueOnce(Object.assign(new Error("disk full"), { code: "ENOSPC" }));
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     expect((await extend(token, id, 30 * DAY, { "payment-signature": payment })).status).toBe(500);
-    expect(await ledger.list()).toMatchObject([{ status: "settled", delivered: true }]);
-    expect(payments.acks.has((await ledger.list())[0].claimKey)).toBe(false);
+    expect(await ledger.list()).toMatchObject([{ status: "settled", delivered: false }]);
 
     expect(await createReconciler(store, payments)(clock)).toMatchObject({ delivered: 1 });
     expect(await expiryOf(token, id)).toBe(new Date(clock + 30 * DAY_MS).toISOString());
-    expect(payments.acks.has((await ledger.list())[0].claimKey)).toBe(true);
+    expect(await ledger.list()).toMatchObject([{ status: "settled", delivered: true }]);
     expect(await createReconciler(store, payments)(clock)).toMatchObject({ delivered: 0 });
     expect(chain.submissions).toHaveLength(1);
   });
