@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accept, FakeFiatToken } from "@zold/accept";
+import { accept, FakeFiatToken, type AcceptOptions } from "@zold/accept";
 import { openSqlite, SqliteRateLimiter, SqliteSellerLedger, SqliteSingleUseStore } from "@zold/accept/sqlite";
 import { evmX402Signer } from "agentpay-hub";
 import { encodePaymentSignature } from "agentpay-hub/protocol";
@@ -11,7 +11,7 @@ import { generatePrivateKey } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/app.js";
 import type { HostConfig } from "../src/config.js";
-import { fileRef } from "../src/extend.js";
+import { createReconciler, fileRef } from "../src/extend.js";
 import { SignupLimiter } from "../src/signupLimiter.js";
 import { FileStore } from "../src/store.js";
 import { TokenStore } from "../src/tokens.js";
@@ -52,9 +52,11 @@ describe("extending links and paying with x402", () => {
   let chain: FakeFiatToken;
   let ledger: SqliteSellerLedger;
   let onError: ReturnType<typeof vi.fn>;
+  let store: FileStore;
+  let payments: Parameters<typeof createReconciler>[1];
   const buyer = evmX402Signer(generatePrivateKey(), () => clock);
 
-  const start = async (overrides: Partial<HostConfig> = {}) => {
+  const start = async (overrides: Partial<HostConfig> = {}, acceptOverrides: Partial<AcceptOptions> = {}) => {
     const config: HostConfig = {
       apiToken: ADMIN,
       publicBaseUrl: "https://shareme.lol",
@@ -88,12 +90,16 @@ describe("extending links and paying with x402", () => {
     tokens = await TokenStore.open(dir);
     const db = openSqlite(":memory:");
     ledger = new SqliteSellerLedger(db);
-    server = createServer(config, await FileStore.open(dir), () => clock, undefined,
-      { tokens, limiter: new SignupLimiter(100, 1000) },
-      { acceptor: accept(acceptOptions(X402, "https://shareme.lol"), {
+    store = await FileStore.open(dir);
+    payments = {
+      ledger,
+      acceptor: accept({ ...acceptOptions(X402, "https://shareme.lol"), ...acceptOverrides }, {
         ledger, claims: new SqliteSingleUseStore(db), rateLimiter: new SqliteRateLimiter(db), chain, submitter: chain, onError,
-        now: () => clock, sleep: async () => undefined,
-      }) });
+        // Each poll lets time pass, so a settlement that never confirms runs into its timeout.
+        now: () => clock, sleep: async (ms: number) => { clock += ms; },
+      }),
+    };
+    server = createServer(config, store, () => clock, undefined, { tokens, limiter: new SignupLimiter(100, 1000) }, payments);
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   };
@@ -105,6 +111,15 @@ describe("extending links and paying with x402", () => {
     fetch(`${base}/api/files/${id}/extend`, { method: "POST", headers: { ...bearer(token), "content-type": "application/json", ...headers }, body: JSON.stringify({ ttlSeconds }) });
   const setPlan = (token: string, id: string, until: string | null) =>
     fetch(`${base}/api/tokens/${id}/plan`, { method: "PUT", headers: { ...bearer(token), "content-type": "application/json" }, body: JSON.stringify({ until }) });
+  /** A fake USDC with the buyer funded; without autoMine nothing is mined until `mine()`. */
+  const newChain = (autoMine: boolean) => {
+    const fake = new FakeFiatToken({
+      chainId: X402.chainId, asset: X402.asset, nowSec: () => Math.floor(clock / 1000), autoMine,
+      domain: { name: "USDC", version: "2", chainId: X402.chainId, verifyingContract: X402.asset as `0x${string}` },
+    });
+    fake.mint(buyer.address, 1_000_000n);
+    return fake;
+  };
   const balance = (owner: string) => chain.balanceOfSync(owner);
   /** What the agent's wallet sends back for the quote in a 402: a signed EIP-3009 authorization. */
   const pay = async (quote: Response, tamper: Record<string, string> = {}) => {
@@ -117,11 +132,7 @@ describe("extending links and paying with x402", () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "share-extend-"));
     clock = Date.parse("2026-10-09T12:00:00Z");
-    chain = new FakeFiatToken({
-      chainId: X402.chainId, asset: X402.asset, nowSec: () => Math.floor(clock / 1000),
-      domain: { name: "USDC", version: "2", chainId: X402.chainId, verifyingContract: X402.asset as `0x${string}` },
-    });
-    chain.mint(buyer.address, 1_000_000n);
+    chain = newChain(true);
     onError = vi.fn();
   });
 
@@ -290,6 +301,59 @@ describe("extending links and paying with x402", () => {
     expect((await res.json()).code).toBe("INSUFFICIENT_FUNDS");
     expect(chain.submissions).toHaveLength(0);
     expect(await expiryOf(token, id)).toBe(expiresAt);
+  });
+
+  it("reports a settlement that outlasts the request as pending, then extends the link once when it settles", async () => {
+    chain = newChain(false);
+    clock += 60_000; // off the hour, so the retry below falls in the same paid hour
+    await start({}, { settlementTimeoutMs: 3_000, pollIntervalMs: 1_000 });
+    const { token } = await newToken();
+    const { id, expiresAt } = await (await upload(token)).json();
+    const quote = await extend(token, id, 30 * DAY);
+    const paidUntil = new Date(Math.ceil((clock + 30 * DAY_MS) / 3_600_000) * 3_600_000).toISOString();
+    const payment = await pay(quote);
+
+    // The transfer is broadcast but never mined while the request waits.
+    const slow = await extend(token, id, 30 * DAY, { "payment-signature": payment });
+    expect(slow.status).toBe(503);
+    expect(slow.headers.get("retry-after")).toBe("5");
+    const body = await slow.json();
+    expect(body).toMatchObject({ code: "SETTLEMENT_TIMEOUT", paymentStatus: "pending" });
+    expect(body.error).toMatch(/same payment; don't sign a new one/);
+    expect(chain.submissions).toHaveLength(1);
+    expect(await expiryOf(token, id)).toBe(expiresAt);
+
+    // Mined later; the timer settles the payment and delivers the extension without the payer coming back.
+    chain.mine(3);
+    const reconcile = createReconciler(store, payments);
+    expect(await reconcile(clock)).toMatchObject({ settled: 1, delivered: 1 });
+    expect(await expiryOf(token, id)).toBe(paidUntil);
+    expect(await ledger.list()).toMatchObject([{ status: "settled", delivered: true }]);
+    expect(await reconcile(clock)).toMatchObject({ settled: 0, delivered: 0 });
+
+    // The payer's retry with the same payment gets the receipt and changes nothing.
+    const retry = await extend(token, id, 30 * DAY, { "payment-signature": payment });
+    expect(retry.status).toBe(200);
+    expect(await expiryOf(token, id)).toBe(paidUntil);
+    expect(chain.submissions).toHaveLength(1);
+    expect(balance(PAY_TO)).toBe(10_001n);
+  });
+
+  it("reports a settled payment whose link is gone once, and keeps it undelivered", async () => {
+    chain = newChain(false);
+    await start({}, { settlementTimeoutMs: 3_000, pollIntervalMs: 1_000 });
+    const { token } = await newToken();
+    const { id } = await (await upload(token)).json();
+    const payment = await pay(await extend(token, id, 30 * DAY));
+    expect((await extend(token, id, 30 * DAY, { "payment-signature": payment })).status).toBe(503);
+    expect((await fetch(`${base}/api/files/${id}`, { method: "DELETE", headers: bearer(token) })).status).toBe(204);
+
+    chain.mine(3);
+    const reconcile = createReconciler(store, payments);
+    expect(await reconcile(clock)).toMatchObject({ settled: 1, delivered: 0 });
+    await reconcile(clock);
+    expect(onError.mock.calls.filter(([e]) => /link is gone/.test(String((e as Error).message)))).toHaveLength(1);
+    expect(await ledger.list()).toMatchObject([{ status: "settled", delivered: false }]);
   });
 
   it("quotes paid time to the hour, so a quote survives the round trip to the wallet", async () => {

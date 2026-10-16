@@ -23,6 +23,9 @@ const FILE_REF_LENGTH = 16;
 // The path every extension is priced and paid under: file ids are secrets, so they stay out of
 // offers and the payment ledger. A payment still binds to its link through `fileRef` in its meta.
 const PAID_PATH = "/api/files/extend";
+// The payment's outcome is unknown or still settling: the money may move, so the client must not pay again.
+const PENDING_CODES = new Set(["IN_PROGRESS", "SETTLEMENT_TIMEOUT", "SETTLEMENT_UNKNOWN"]);
+const PENDING_RETRY_SECONDS = "5";
 
 function days(seconds: number): string {
   const n = Math.round((seconds / DAY_SECONDS) * 10) / 10;
@@ -43,6 +46,20 @@ function refused(x402: X402Config, result: Refusal, amount: number): HttpError {
   );
   const parsed: unknown = JSON.parse(result.body);
   const code = isObject(parsed) && typeof parsed.error === "string" ? parsed.error : "INTERNAL";
+  // Any 5xx may come after a broadcast; retrying the same payment is always safe, paying again is not.
+  if (PENDING_CODES.has(code) || result.status >= 500) {
+    return new HttpError(
+      503,
+      "This payment hasn't settled yet. Once it does, the link is extended without another request. " +
+        "To check, retry this request with the same payment; don't sign a new one.",
+      { ...headers, "retry-after": headers["retry-after"] ?? PENDING_RETRY_SECONDS },
+      { code, paymentStatus: "pending" },
+    );
+  }
+  if (code === "NONCE_REPLAY") {
+    return new HttpError(409, "This payment was already used for another extension (another link, or a quote from an earlier hour). " +
+      "A payment that was still settling extends its own link once it settles; for anything else, get a new quote.", headers, { code });
+  }
   if (result.status !== 402) return new HttpError(result.status, `Payment not accepted (${code})`, headers, { code });
   const message = code === "PAYMENT_REQUIRED"
     ? "Payment required to keep this link longer than your plan allows"
@@ -62,6 +79,48 @@ async function readTtl(req: IncomingMessage): Promise<number> {
  * POST /api/files/:id/extend: a link may live up to its plan's limit (counted from upload) for free;
  * past that, each started 30 days is paid for with x402, up to the host's longest lifetime.
  */
+/** Keeps a link until at least `until`, never shortening it, so a payment delivered twice changes nothing. */
+async function extendTo(store: FileStore, id: string, until: number, now: number): Promise<FileMeta> {
+  const current = store.get(id, now);
+  const meta = current && current.expiresAt >= until ? current : await store.setExpiry(id, until, now);
+  if (!meta) throw new HttpError(404, "Link not found");
+  return meta;
+}
+
+/**
+ * Runs @zold/accept's reconciliation, then extends the links of payments that settled after their request
+ * ended (it timed out, or the payer never came back). Run it on a timer in the one host process.
+ */
+export function createReconciler(store: FileStore, payments: Payments) {
+  // Paid but undeliverable (the link is gone): reported once per process, refunded by hand.
+  const reported = new Set<string>();
+
+  async function deliver(now: number): Promise<number> {
+    // shortcut: scans the whole ledger each run; index settled-undelivered rows once it holds many thousands.
+    const owed = (await payments.ledger.list()).filter((row) => row.status === "settled" && !row.delivered);
+    if (owed.length === 0) return 0;
+    const live = new Map(store.list(now).map((meta) => [fileRef(meta.id), meta]));
+    let delivered = 0;
+    for (const row of owed) {
+      const meta = live.get(row.meta.fileRef ?? "");
+      if (!meta) {
+        if (!reported.has(row.claimKey)) payments.acceptor.reportError(new Error(`payment for link ${row.meta.fileRef} settled, but the link is gone`));
+        reported.add(row.claimKey);
+        continue;
+      }
+      await extendTo(store, meta.id, Number(row.meta.until), now);
+      await payments.ledger.markDelivered(row.claimKey);
+      delivered += 1;
+    }
+    return delivered;
+  }
+
+  return async function reconcile(now: number) {
+    const report = await payments.acceptor.reconcileOwed();
+    return { ...report, delivered: await deliver(now) };
+  };
+}
+
 export function createExtender(config: HostConfig, store: FileStore, now: Clock, payments?: Payments) {
   // One extension per link at a time, so two payments can't both buy the same days.
   const busy = new Set<string>();
@@ -79,6 +138,8 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     }
     // Paid time ends on the hour, so a quote still holds when the client comes back with the payment.
     const target = Math.ceil(requestedTarget / HOUR_MS) * HOUR_MS;
+    // Already paid through that hour (e.g. a retry once the payment settled): nothing more to buy.
+    if (target <= meta.expiresAt) return { meta, headers: {} };
     if (target > meta.createdAt + x402.maxLifetimeSeconds * 1000) {
       throw new HttpError(400, `A link can live at most ${days(x402.maxLifetimeSeconds)} in total`);
     }
@@ -90,7 +151,8 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     const result = await payments.acceptor.handle(request, { price });
     if (result.kind === "respond") throw refused(x402, result, amount);
     try {
-      return { meta: await setExpiry(meta.id, target), headers: result.headers };
+      // A replayed delivery, or one the reconciler made first, is a no-op: extendTo never shortens.
+      return { meta: await extendTo(store, meta.id, target, now()), headers: result.headers };
     } catch (err) {
       // Paid but not delivered (the link went away meanwhile): the operator has to refund it by hand.
       payments.acceptor.reportError(new Error(`payment for link ${fileRef(meta.id)} settled, but the link could not be extended`));

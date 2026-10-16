@@ -8,6 +8,7 @@ import { renderSetupGuide } from "./setupGuide.js";
 import { SignupLimiter } from "./signupLimiter.js";
 import { FileStore } from "./store.js";
 import { TokenStore } from "./tokens.js";
+import { createReconciler } from "./extend.js";
 import { openPayments } from "./x402.js";
 
 const RECONCILE_INTERVAL_MS = 60_000;
@@ -29,11 +30,16 @@ async function main(): Promise<void> {
     limiter: new SignupLimiter(config.signupsPerIpPerHour, config.signupsPerDay),
   }, payments);
   if (config.x402) console.log(`[share-host] taking x402 payments on ${config.x402.network}, settling them itself`);
-  // Settles, expires or reports payments whose request ended before settlement, and prunes used claims.
-  const reconcile = payments && setInterval(() => {
-    payments.acceptor.reconcileOwed().then(
-      (r) => { if (r.settled + r.refused > 0) console.log(`[share-host] reconciled payments: ${r.settled} settled, ${r.refused} refused, ${r.open} open`); },
-      (err: unknown) => console.error("[share-host] payment reconciliation failed:", (err as { code?: string }).code ?? "unknown error"),
+  // Settles, expires or reports payments whose request ended before settlement, extends their links, prunes used claims.
+  const reconcileOnce = payments && createReconciler(store, payments);
+  const reconcile = reconcileOnce && setInterval(() => {
+    reconcileOnce(Date.now()).then(
+      (r) => {
+        if (r.settled + r.refused + r.delivered > 0) {
+          console.log(`[share-host] reconciled payments: ${r.settled} settled, ${r.refused} refused, ${r.delivered} delivered, ${r.open} open`);
+        }
+      },
+      (err: unknown) => payments.acceptor.reportError(err),
     );
   }, RECONCILE_INTERVAL_MS);
 
