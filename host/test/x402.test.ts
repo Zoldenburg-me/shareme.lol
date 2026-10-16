@@ -1,8 +1,9 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HttpRequestError } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { acceptOptions, formatAmount, openPayments, priceFor, reportPaymentError } from "../src/x402.js";
+import { acceptOptions, formatAmount, openPayments, paymentErrorReporter, priceFor, redact } from "../src/x402.js";
 import { loadX402Config, type X402Config } from "../src/x402Config.js";
 
 const PAY_TO = "0x" + "ab".repeat(20);
@@ -86,20 +87,38 @@ describe("x402 pricing and wiring", () => {
     expect(() => acceptOptions(cfg, "https://shareme.lol").price({ method: "POST", path: "/", headers: {} })).toThrow();
   });
 
-  it("logs payment errors without payer addresses", () => {
+  it("logs an RPC failure with its code, without the RPC URL's key, the gas key or payer addresses", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    reportPaymentError(Object.assign(new Error(`payment share-me|84532|0xa|${PAY_TO}|0x1: SETTLEMENT_UNKNOWN`), { code: "SETTLEMENT_UNKNOWN" }));
-    expect(log.mock.calls[0].join(" ")).toMatch(/SETTLEMENT_UNKNOWN/);
-    expect(log.mock.calls[0].join(" ")).not.toContain(PAY_TO);
+    const config = { ...cfg, rpcUrl: "https://sepolia.example/v2/SECRETKEY" };
+    // What viem throws when the RPC is down: its message carries the full URL.
+    const rpcDown = new HttpRequestError({ url: config.rpcUrl, details: "fetch failed", body: { method: "eth_blockNumber" } });
+    expect(rpcDown.message).toContain("SECRETKEY");
+    paymentErrorReporter(config)(rpcDown);
+    paymentErrorReporter(config)(Object.assign(new Error(`payment share-me|84532|0xa|${PAY_TO}|0x1 via ${GAS_KEY}`), { code: "SETTLEMENT_UNKNOWN" }));
+    const logged = log.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toContain("payment HttpRequestError:");
+    expect(logged).toContain("https://sepolia.example/…");
+    expect(logged).toContain("payment SETTLEMENT_UNKNOWN:");
+    for (const secret of ["SECRETKEY", "/v2/", GAS_KEY, PAY_TO]) expect(logged).not.toContain(secret);
     log.mockRestore();
   });
 
-  it("opens its stores in one SQLite file under the data dir", async () => {
+  it("cuts any URL in a message to scheme and host, credentials included", () => {
+    expect(redact("POST https://user:pw@rpc.example:8545/k/abc?x=1 failed", [])).toBe("POST https://rpc.example/… failed");
+  });
+
+  it("opens its stores in one SQLite file only this user can read, fixing an older readable one", async () => {
     const dir = await mkdtemp(join(tmpdir(), "share-x402-"));
     try {
-      const { acceptor } = openPayments(cfg, dir, "https://shareme.lol");
+      await chmod(dir, 0o755);
+      await writeFile(join(dir, "payments.db"), "", { mode: 0o644 });
+      const { acceptor, ledger } = openPayments(cfg, dir, "https://shareme.lol");
       expect(typeof acceptor.handle).toBe("function");
-      expect((await stat(join(dir, "payments.db"))).isFile()).toBe(true);
+      expect(await ledger.list()).toEqual([]);
+      expect((await stat(dir)).mode & 0o777).toBe(0o700);
+      for (const file of ["payments.db", "payments.db-wal", "payments.db-shm"]) {
+        expect((await stat(join(dir, file))).mode & 0o777, file).toBe(0o600);
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

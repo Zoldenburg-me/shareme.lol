@@ -1,5 +1,6 @@
+import { chmodSync, closeSync, existsSync, openSync } from "node:fs";
 import { join } from "node:path";
-import { accept, viemChain, viemSubmitter, type AcceptDeps, type AcceptOptions, type Acceptor } from "@zold/accept";
+import { accept, viemChain, viemSubmitter, type AcceptDeps, type AcceptOptions, type Acceptor, type SellerLedgerPort } from "@zold/accept";
 import { openSqlite, SqliteRateLimiter, SqliteSellerLedger, SqliteSingleUseStore } from "@zold/accept/sqlite";
 import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -9,6 +10,8 @@ import type { X402Config } from "./x402Config.js";
 /** How this host takes payments: @zold/accept verifies, settles on chain itself and delivers once. */
 export interface Payments {
   readonly acceptor: Acceptor;
+  /** The acceptor's ledger: settled payments whose request ended before delivery are delivered from it. */
+  readonly ledger: SellerLedgerPort;
 }
 
 const MONTH_SECONDS = 30 * 86_400;
@@ -17,6 +20,10 @@ const DB_FILE = "payments.db";
 // Settlements in flight at once, across all tokens; each polls the chain for up to a minute.
 const MAX_PAYMENTS_IN_FLIGHT = 8;
 const ADDRESS = /0x[0-9a-fA-F]{40}/g;
+const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
+// The ledger names payers next to what they paid for (personal data): owner-only, like tokens.json.
+const PRIVATE_FILE = 0o600;
+const PRIVATE_DIR = 0o700;
 
 /** Atomic units for `seconds` of extra life on a file of `size` bytes: per started 30 days. */
 export function priceFor(config: X402Config, seconds: number, size: number): number {
@@ -50,12 +57,37 @@ export function acceptOptions(config: X402Config, publicBaseUrl: string): Accept
 }
 
 /**
- * Where @zold/accept reports what no request is left to answer. Only the code and message: the
- * cause may hold the RPC URL (and its key), and messages name payers' addresses (personal data).
+ * Text safe to log: the given secrets removed, every URL cut to scheme and host (RPC errors carry the
+ * full URL, and an RPC URL often holds an API key), and payers' addresses (personal data) masked.
  */
-export function reportPaymentError(error: unknown): void {
-  const { code, message } = error as { code?: string; message?: string };
-  console.error(`[share-host] payment ${code ?? "error"}:`, String(message ?? error).replace(ADDRESS, "0x…"));
+export function redact(text: string, secrets: readonly string[]): string {
+  const urlsCut = text.replace(URL_IN_TEXT, (url) => {
+    try {
+      const { protocol, hostname } = new URL(url);
+      return `${protocol}//${hostname}/…`;
+    } catch {
+      return "<url>";
+    }
+  });
+  return secrets.filter(Boolean).reduce((t, secret) => t.split(secret).join("<redacted>"), urlsCut).replace(ADDRESS, "0x…");
+}
+
+/** Where @zold/accept reports what no request is left to answer: the code and a redacted message, never the cause. */
+export function paymentErrorReporter(config: X402Config): (error: unknown) => void {
+  return (error) => {
+    const { code, message } = error as { code?: unknown; message?: unknown };
+    const label = typeof code === "string" ? code : error instanceof Error ? error.name : "error";
+    console.error(`[share-host] payment ${label}:`, redact(String(message ?? error), [config.rpcUrl, config.gasPrivateKey]));
+  };
+}
+
+/** Opens <dataDir>/payments.db readable by this user only, its -wal and -shm included (SQLite copies the file's mode). */
+function openPrivateDb(dataDir: string) {
+  chmodSync(dataDir, PRIVATE_DIR);
+  const path = join(dataDir, DB_FILE);
+  closeSync(openSync(path, "a", PRIVATE_FILE));
+  for (const file of [path, `${path}-wal`, `${path}-shm`]) if (existsSync(file)) chmodSync(file, PRIVATE_FILE);
+  return openSqlite(path);
 }
 
 /** Production wiring: Base Sepolia over the configured RPC, every store in <dataDir>/payments.db. */
@@ -63,16 +95,17 @@ export function openPayments(config: X402Config, dataDir: string, publicBaseUrl:
   const transport = http(config.rpcUrl);
   const client = createPublicClient({ chain: baseSepolia, transport });
   const wallet = createWalletClient({ chain: baseSepolia, transport, account: privateKeyToAccount(config.gasPrivateKey) });
-  const db = openSqlite(join(dataDir, DB_FILE));
+  const db = openPrivateDb(dataDir);
+  const ledger = new SqliteSellerLedger(db);
   const deps: AcceptDeps = {
-    ledger: new SqliteSellerLedger(db),
+    ledger,
     claims: new SqliteSingleUseStore(db),
     rateLimiter: new SqliteRateLimiter(db),
     chain: viemChain({ client, chainId: config.chainId }),
     submitter: viemSubmitter({
       wallet, client, chainId: config.chainId, asset: config.asset, payTo: config.payTo, maxGas: config.maxGas, maxFeePerGas: config.maxFeePerGas,
     }),
-    onError: reportPaymentError,
+    onError: paymentErrorReporter(config),
   };
-  return { acceptor: accept(acceptOptions(config, publicBaseUrl), deps) };
+  return { acceptor: accept(acceptOptions(config, publicBaseUrl), deps), ledger };
 }
