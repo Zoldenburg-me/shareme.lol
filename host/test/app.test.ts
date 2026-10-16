@@ -214,6 +214,30 @@ describe("host HTTP API", () => {
     }
   });
 
+  it("keeps draining a refused body that arrives at a normal pace", async () => {
+    const slow = createServer({ ...config, uploadPaceWindowMs: 200 }, await FileStore.open(dir));
+    await new Promise<void>((r) => slow.listen(0, "127.0.0.1", r));
+    try {
+      const socket = connect((slow.address() as AddressInfo).port, "127.0.0.1");
+      socket.on("error", () => {});
+      let reply = "";
+      socket.on("data", (d) => (reply += d));
+      let closed = false;
+      socket.on("close", () => (closed = true));
+      socket.write("POST /api/files HTTP/1.1\r\nhost: x\r\nauthorization: Bearer wrong\r\ntransfer-encoding: chunked\r\n\r\n");
+      const kib = `400\r\n${"x".repeat(1024)}\r\n`;
+      const steady = setInterval(() => socket.write(kib), 50);
+      await new Promise((r) => setTimeout(r, 1000));
+      clearInterval(steady);
+      expect(reply.startsWith("HTTP/1.1 401")).toBe(true);
+      expect(closed).toBe(false);
+      socket.destroy();
+    } finally {
+      slow.closeAllConnections();
+      await new Promise((r) => slow.close(r));
+    }
+  });
+
   it("uses the default TTL and clamps to the max TTL", async () => {
     const def = await (await upload("a")).json();
     expect(def.expiresAt).toBe(new Date(clock + 3_600_000).toISOString());
