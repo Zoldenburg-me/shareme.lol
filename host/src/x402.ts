@@ -11,30 +11,11 @@ import type { X402Config } from "./x402Config.js";
 /** How this host takes payments: @zold/accept verifies, settles on chain itself and delivers once. */
 export interface Payments {
   readonly acceptor: Acceptor;
-  /** The acceptor's ledger. Its `delivered` flag is set before the link is extended, so the host keeps its own `acks`. */
-  readonly ledger: SellerLedgerPort;
-  readonly acks: ExtensionAcks;
+  /** Payments are handled with deferDelivery, so a row is `delivered` only once its link was extended. */
+  readonly ledger: SellerLedgerPort & Required<Pick<SellerLedgerPort, "undelivered">>;
   /** Ids of links with a payment request in flight here: the sweep keeps them. */
   readonly paying: Set<string>;
 }
-
-/** Settled payments whose link this host has extended, written only once the extension is on disk. */
-export class ExtensionAcks {
-  constructor(private readonly db: DatabaseSync) {
-    db.exec("CREATE TABLE IF NOT EXISTS share_extension_acks (claim_key TEXT PRIMARY KEY, at INTEGER NOT NULL) STRICT");
-  }
-
-  has(claimKey: string): boolean {
-    return this.db.prepare("SELECT 1 FROM share_extension_acks WHERE claim_key = ?").get(claimKey) !== undefined;
-  }
-
-  add(claimKey: string, at: number): void {
-    this.db.prepare("INSERT OR IGNORE INTO share_extension_acks (claim_key, at) VALUES (?, ?)").run(claimKey, at);
-  }
-}
-
-/** Part of every claim key: retries are matched to their ledger row with it. */
-export const SELLER_ACCOUNT_ID = "share-me";
 
 const MONTH_SECONDS = 30 * 86_400;
 const GIBIBYTE = 1024 ** 3;
@@ -45,7 +26,8 @@ const MAX_PAYMENTS_IN_FLIGHT = 8;
 // Kept well under the MCP client's extend timeout; the reconciler delivers whatever settles later.
 export const SETTLEMENT_WAIT_MS = 20_000;
 const ADDRESS = /0x[0-9a-fA-F]{40}/g;
-const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
+// Shorter URL parts ("v2", "rpc") aren't credentials, and masking them would garble messages.
+const MIN_SECRET_LENGTH = 8;
 // The ledger names payers next to what they paid for (personal data): owner-only, like tokens.json.
 const PRIVATE_FILE = 0o600;
 const PRIVATE_DIR = 0o700;
@@ -67,7 +49,7 @@ export function formatAmount(amount: number, decimals: number): string {
 export function acceptOptions(config: X402Config, publicBaseUrl: string): AcceptOptions {
   const origin = new URL(publicBaseUrl);
   return {
-    sellerAccountId: SELLER_ACCOUNT_ID,
+    sellerAccountId: "share-me",
     payTo: config.payTo,
     chainId: config.chainId,
     asset: config.asset,
@@ -82,29 +64,50 @@ export function acceptOptions(config: X402Config, publicBaseUrl: string): Accept
   };
 }
 
-/**
- * Text safe to log: the given secrets removed, every URL cut to scheme and host (RPC errors carry the
- * full URL, and an RPC URL often holds an API key), and payers' addresses (personal data) masked.
- */
-export function redact(text: string, secrets: readonly string[]): string {
-  const urlsCut = text.replace(URL_IN_TEXT, (url) => {
-    try {
-      const { protocol, hostname } = new URL(url);
-      return `${protocol}//${hostname}/…`;
-    } catch {
-      return "<url>";
-    }
-  });
-  return secrets.filter(Boolean).reduce((t, secret) => t.split(secret).join("<redacted>"), urlsCut).replace(ADDRESS, "0x…");
+/** The configured values that must never reach a log: the gas key (with and without 0x) and the RPC URL and its parts. */
+function secretsOf(config: X402Config): string[] {
+  const url = new URL(config.rpcUrl);
+  const parts = [url.pathname, url.search.slice(1), url.username, url.password, ...url.pathname.split("/"), ...url.searchParams.values()];
+  return [config.gasPrivateKey, config.gasPrivateKey.slice(2), config.rpcUrl, ...parts.filter((part) => part.length >= MIN_SECRET_LENGTH)];
 }
 
-/** Where @zold/accept reports what no request is left to answer: the code and a redacted message, never the cause. */
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Where @zold/accept reports what no request is left to answer: the code and message, never the cause.
+ * It cuts every URL first; this also removes the configured secrets wherever they appear outside a URL,
+ * and masks payers' addresses (personal data).
+ */
 export function paymentErrorReporter(config: X402Config): (error: unknown) => void {
+  // Longest first, so the whole RPC URL goes before its parts; hex keys may arrive in any case.
+  const secrets = new RegExp([...new Set(secretsOf(config))].sort((x, y) => y.length - x.length).map(escapeRegExp).join("|"), "gi");
   return (error) => {
     const { code, message } = error as { code?: unknown; message?: unknown };
     const label = typeof code === "string" ? code : error instanceof Error ? error.name : "error";
-    console.error(`[share-host] payment ${label}:`, redact(String(message ?? error), [config.rpcUrl, config.gasPrivateKey]));
+    console.error(`[share-host] payment ${label}:`, String(message ?? error).replace(secrets, "<redacted>").replace(ADDRESS, "0x…"));
   };
+}
+
+/**
+ * A 0.1 host let @zold/accept mark a payment delivered before extending its link, and recorded the extension in
+ * share_extension_acks. Settled rows marked delivered without an ack never got their extension: mark them
+ * undelivered so the reconciler extends them (idempotent), then drop the table. Runs once, before any reconcile.
+ */
+export function migrateExtensionAcks(db: DatabaseSync): number {
+  const legacy = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'share_extension_acks'").get();
+  if (!legacy) return 0;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    // seller_payments is @zold/accept's SQLite ledger table (0.1 and 0.2 share its shape).
+    const { changes } = db.prepare(`UPDATE seller_payments SET delivered = 0 WHERE status = 'settled' AND delivered = 1
+      AND claim_key NOT IN (SELECT claim_key FROM share_extension_acks)`).run();
+    db.exec("DROP TABLE share_extension_acks");
+    db.exec("COMMIT");
+    return Number(changes);
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
 }
 
 /** Opens <dataDir>/payments.db readable by this user only, its -wal and -shm included (SQLite copies the file's mode). */
@@ -123,6 +126,8 @@ export function openPayments(config: X402Config, dataDir: string, publicBaseUrl:
   const wallet = createWalletClient({ chain: baseSepolia, transport, account: privateKeyToAccount(config.gasPrivateKey) });
   const db = openPrivateDb(dataDir);
   const ledger = new SqliteSellerLedger(db);
+  const reopened = migrateExtensionAcks(db);
+  if (reopened > 0) console.log(`[share-host] ${reopened} paid extension(s) from before the upgrade will be delivered again`);
   const deps: AcceptDeps = {
     ledger,
     claims: new SqliteSingleUseStore(db),
@@ -133,5 +138,5 @@ export function openPayments(config: X402Config, dataDir: string, publicBaseUrl:
     }),
     onError: paymentErrorReporter(config),
   };
-  return { acceptor: accept(acceptOptions(config, publicBaseUrl), deps), ledger, acks: new ExtensionAcks(db), paying: new Set() };
+  return { acceptor: accept(acceptOptions(config, publicBaseUrl), deps), ledger, paying: new Set() };
 }
