@@ -31,10 +31,7 @@ const X402: X402Config = {
   asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
   assetDecimals: 6,
   assetSymbol: "USDC",
-  rpcUrl: "https://rpc.invalid/",
-  gasPrivateKey: `0x${"11".repeat(32)}`,
-  maxGas: 150_000n,
-  maxFeePerGas: 10_000_000_000n,
+  settlement: { kind: "self", rpcUrl: "https://rpc.invalid/", gasPrivateKey: `0x${"11".repeat(32)}`, maxGas: 150_000n, maxFeePerGas: 10_000_000_000n },
   pricePerFileMonth: 10_000,
   pricePerGbMonth: 20_000,
   maxLifetimeSeconds: 365 * DAY,
@@ -92,6 +89,7 @@ describe("extending links and paying with x402", () => {
     ledger = new SqliteSellerLedger(db);
     store = await FileStore.open(dir);
     payments = {
+      mode: "local",
       ledger,
       paying: new Set(),
       acceptor: accept({ ...acceptOptions(X402, "https://shareme.lol"), ...acceptOverrides }, {

@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { HttpRequestError } from "viem";
 import { describe, expect, it, vi } from "vitest";
 import { openSqlite, SqliteSellerLedger } from "@zold/accept/sqlite";
-import { acceptOptions, formatAmount, openPayments, paymentErrorReporter, priceFor } from "../src/x402.js";
-import { loadX402Config, type X402Config } from "../src/x402Config.js";
+import { acceptOptions, formatAmount, openPayments, paymentErrorReporter, priceFor, type LocalPayments } from "../src/x402.js";
+import { loadX402Config, type SelfSettlement, type X402Config } from "../src/x402Config.js";
 
 const PAY_TO = "0x" + "ab".repeat(20);
 const GAS_KEY = `0x${"11".repeat(32)}`;
@@ -28,15 +28,45 @@ describe("loadX402Config", () => {
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
       assetDecimals: 6,
       assetSymbol: "USDC",
-      rpcUrl: "https://sepolia.example/v2/KEY",
-      gasPrivateKey: GAS_KEY,
-      maxGas: 150_000n,
-      maxFeePerGas: 10_000_000_000n,
+      settlement: { kind: "self", rpcUrl: "https://sepolia.example/v2/KEY", gasPrivateKey: GAS_KEY, maxGas: 150_000n, maxFeePerGas: 10_000_000_000n },
       pricePerFileMonth: 10_000,
       pricePerGbMonth: 20_000,
       maxLifetimeSeconds: 365 * DAY,
       maxTimeoutSeconds: 120,
     });
+  });
+
+  it("settles through a Zold hub when one is configured, with no gas key or RPC on this host", () => {
+    const key = `zsk_${"k".repeat(32)}`;
+    const hub = { X402_PAY_TO: PAY_TO, X402_HUB_URL: "https://hub.example/", X402_HUB_KEY: key };
+    expect(loadX402Config(hub)?.settlement).toEqual({ kind: "hub", url: "https://hub.example", key });
+    expect(loadX402Config({ ...hub, X402_HUB_URL: "http://localhost:8787" })?.settlement).toMatchObject({ url: "http://localhost:8787" });
+    for (const url of ["http://hub.example", "https://hub.example/api", "not a url"]) {
+      expect(() => loadX402Config({ ...hub, X402_HUB_URL: url })).toThrow(/X402_HUB_URL/);
+    }
+    expect(() => loadX402Config({ ...hub, X402_HUB_KEY: "wrongprefix-secretvalue" })).toThrow(/X402_HUB_KEY/);
+    expect(() => loadX402Config({ ...hub, X402_HUB_KEY: "wrongprefix-secretvalue" })).not.toThrow(/secretvalue/);
+    expect(() => loadX402Config({ ...hub, X402_HUB_KEY: undefined })).toThrow(/X402_HUB_KEY/);
+  });
+
+  it("treats blank values as unset, so a blanked variable switches modes cleanly", () => {
+    const key = `zsk_${"k".repeat(32)}`;
+    expect(loadX402Config({ ...ENV, X402_HUB_URL: "", X402_HUB_KEY: "" })?.settlement.kind).toBe("self");
+    expect(loadX402Config({ X402_PAY_TO: PAY_TO, X402_HUB_URL: "https://hub.example", X402_HUB_KEY: key, X402_GAS_PRIVATE_KEY: "", X402_RPC_URL: "" })?.settlement.kind).toBe("hub");
+    expect(loadX402Config({ X402_PAY_TO: "", X402_HUB_URL: "", X402_HUB_KEY: "", X402_GAS_PRIVATE_KEY: "", X402_RPC_URL: "" })).toBeUndefined();
+  });
+
+  it("refuses settlement variables without X402_PAY_TO, naming them but not their values", () => {
+    for (const name of ["X402_HUB_URL", "X402_HUB_KEY", "X402_GAS_PRIVATE_KEY", "X402_RPC_URL"]) { // gitleaks:allow (variable names, no values)
+      expect(() => loadX402Config({ [name]: "value-not-shown" })).toThrow(new RegExp(`${name} set without X402_PAY_TO`));
+      expect(() => loadX402Config({ [name]: "value-not-shown" })).not.toThrow(/value-not-shown/);
+    }
+  });
+
+  it("refuses payments with no way to settle them, or with both", () => {
+    expect(() => loadX402Config({ X402_PAY_TO: PAY_TO })).toThrow(/needs a way to settle/);
+    expect(() => loadX402Config({ X402_PAY_TO: PAY_TO, X402_HUB_KEY: `zsk_${"k".repeat(32)}` })).toThrow(/without X402_HUB_URL/);
+    expect(() => loadX402Config({ ...ENV, X402_HUB_URL: "https://hub.example", X402_HUB_KEY: `zsk_${"k".repeat(32)}` })).toThrow(/not both/);
   });
 
   it("refuses every chain but Base Sepolia for now", () => {
@@ -57,7 +87,7 @@ describe("loadX402Config", () => {
   });
 
   it("takes gas and fee caps, and keeps offers within what @zold/accept allows", () => {
-    expect(loadX402Config({ ...ENV, X402_MAX_GAS: "200000", X402_MAX_FEE_PER_GAS: "5" })).toMatchObject({ maxGas: 200_000n, maxFeePerGas: 5n });
+    expect(loadX402Config({ ...ENV, X402_MAX_GAS: "200000", X402_MAX_FEE_PER_GAS: "5" })).toMatchObject({ settlement: { maxGas: 200_000n, maxFeePerGas: 5n } });
     expect(() => loadX402Config({ ...ENV, X402_MAX_GAS: "-1" })).toThrow(/X402_MAX_GAS/);
     expect(() => loadX402Config({ ...ENV, X402_MAX_TIMEOUT_SECONDS: "300" })).toThrow(/X402_MAX_TIMEOUT_SECONDS must be an integer from 60 to 240/);
   });
@@ -92,10 +122,11 @@ describe("x402 pricing and wiring", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const dir = await mkdtemp(join(tmpdir(), "share-x402-"));
     try {
-      const config = { ...cfg, rpcUrl: "https://sepolia.example/v2/SECRETKEY" };
-      const { acceptor } = openPayments(config, dir, "https://shareme.lol");
+      const rpcUrl = "https://sepolia.example/v2/SECRETKEY";
+      const config = { ...cfg, settlement: { ...(cfg.settlement as SelfSettlement), rpcUrl } };
+      const { acceptor } = openPayments(config, dir, "https://shareme.lol") as LocalPayments;
       // What viem throws when the RPC is down: its message carries the full URL. @zold/accept cuts it.
-      const rpcDown = new HttpRequestError({ url: config.rpcUrl, details: "fetch failed", body: { method: "eth_blockNumber" } });
+      const rpcDown = new HttpRequestError({ url: rpcUrl, details: "fetch failed", body: { method: "eth_blockNumber" } });
       expect(rpcDown.message).toContain("SECRETKEY");
       acceptor.reportError(rpcDown);
       paymentErrorReporter(config)(Object.assign(new Error(`payment share-me|84532|0xa|${PAY_TO}|0x1`), { code: "SETTLEMENT_UNKNOWN" }));
@@ -110,13 +141,22 @@ describe("x402 pricing and wiring", () => {
     }
   });
 
+  it("never logs the hub key", () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const key = `zsk_${"s".repeat(32)}`;
+    paymentErrorReporter({ ...cfg, settlement: { kind: "hub", url: "https://hub.example", key } })(new Error(`hub refused ${key}`));
+    expect(log.mock.calls.join(" ")).toBe("[share-host] payment Error:,hub refused <redacted>");
+    log.mockRestore();
+  });
+
   it("never logs the gas key or RPC credentials, even outside a URL", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const config = { ...cfg, rpcUrl: "https://user:pw-secret-1@rpc.example/v3/PROJECTKEY123?apikey=QUERYKEY456" };
+    const rpcUrl = "https://user:pw-secret-1@rpc.example/v3/PROJECTKEY123?apikey=QUERYKEY456";
+    const config = { ...cfg, settlement: { ...(cfg.settlement as SelfSettlement), rpcUrl } };
     const report = paymentErrorReporter(config);
     report(new Error(`signer ${GAS_KEY} / ${GAS_KEY.slice(2).toUpperCase()} failed`));
     report(new Error("provider said: invalid project PROJECTKEY123, apikey=QUERYKEY456, auth pw-secret-1"));
-    report(new Error(`raw ${config.rpcUrl} and path /v3/PROJECTKEY123`));
+    report(new Error(`raw ${rpcUrl} and path /v3/PROJECTKEY123`));
     const logged = log.mock.calls.map((c) => c.join(" ")).join("\n");
     for (const secret of [GAS_KEY.slice(2), "PROJECTKEY123", "QUERYKEY456", "pw-secret-1"]) expect(logged.toLowerCase()).not.toContain(secret.toLowerCase());
     expect(logged).toContain("<redacted>");
@@ -145,7 +185,7 @@ describe("x402 pricing and wiring", () => {
       old.close();
 
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-      const { ledger } = openPayments(cfg, dir, "https://shareme.lol");
+      const { ledger } = openPayments(cfg, dir, "https://shareme.lol") as LocalPayments;
       expect((await ledger.undelivered()).map((r) => r.claimKey)).toEqual(["k2"]);
       expect(await ledger.get("k1")).toMatchObject({ delivered: true });
       expect(await ledger.get("k3")).toMatchObject({ status: "owed", delivered: false });
@@ -166,7 +206,7 @@ describe("x402 pricing and wiring", () => {
     try {
       await chmod(dir, 0o755);
       await writeFile(join(dir, "payments.db"), "", { mode: 0o644 });
-      const { acceptor, ledger } = openPayments(cfg, dir, "https://shareme.lol");
+      const { acceptor, ledger } = openPayments(cfg, dir, "https://shareme.lol") as LocalPayments;
       expect(typeof acceptor.handle).toBe("function");
       expect(await ledger.list()).toEqual([]);
       expect((await stat(dir)).mode & 0o777).toBe(0o700);
