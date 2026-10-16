@@ -49,6 +49,7 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
   let chain: FakeFiatToken;
   let hubLedger: SqliteSellerLedger;
   let payments: HubPayments;
+  let store: FileStore;
   let calls: HubCall[];
   /** What the hub's network does with the next call: answer it, lose the answer after settling, or be down. */
   let network: "up" | "lose-answer" | "down";
@@ -84,15 +85,18 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
       uploadPaceWindowMs: 10_000, pro: { maxTtlSeconds: 90 * DAY, quotaBytes: 500, maxFiles: 5 }, x402: X402,
     };
     const tokens = await TokenStore.open(dir);
-    const store = await FileStore.open(dir);
-    payments = openHubPayments(X402, HUB, fetchImpl);
+    store = await FileStore.open(dir);
+    payments = openHubPayments(X402, HUB, dir, fetchImpl);
     server = createServer(config, store, () => clock, undefined, { tokens, limiter: new SignupLimiter(100, 1000) }, payments);
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const { token } = (await (await fetch(`${base}/api/tokens`, { method: "POST" })).json()) as { token: string };
-    const { id } = await (await fetch(`${base}/api/files`, { method: "POST", headers: { ...bearer(token), "x-filename": "a.md" }, body: "hello" })).json();
-    return { token, id: id as string };
+    return { token, id: await upload(token) };
   };
+  const upload = async (token: string): Promise<string> =>
+    (await (await fetch(`${base}/api/files`, { method: "POST", headers: { ...bearer(token), "x-filename": "a.md" }, body: "hello" })).json()).id;
+  const expiryOf = async (token: string, id: string) =>
+    ((await (await fetch(`${base}/api/files`, { headers: bearer(token) })).json()).files as { id: string; expiresAt: string }[]).find((f) => f.id === id)?.expiresAt;
 
   const extend = (token: string, id: string, headers: Record<string, string> = {}) =>
     fetch(`${base}/api/files/${id}/extend`, { method: "POST", headers: { ...bearer(token), "content-type": "application/json", ...headers }, body: JSON.stringify({ ttlSeconds: 30 * DAY }) });
@@ -188,12 +192,101 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
     expect(new Date((await (await fetch(`${base}/api/files`, { headers: bearer(token) })).json()).files[0].expiresAt).getTime()).toBe(clock + DAY_MS);
   });
 
-  it("holds a link from the sweep only while its payment request is in flight here", async () => {
+  it("retries a payment at its first price across an hour boundary, extending once", async () => {
+    const { token, id } = await start(newHub());
+    const payment = await pay(await extend(token, id));
+    const until = new Date(clock + 30 * DAY_MS).toISOString();
+    network = "lose-answer";
+    expect((await extend(token, id, { "payment-signature": payment })).status).toBe(503);
+    clock += 2 * 3_600_000; // re-priced now, the link would end two hours later and the hub would refuse it
+    network = "up";
+    const retry = await extend(token, id, { "payment-signature": payment });
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).expiresAt).toBe(until);
+    expect(chain.submissions).toHaveLength(1);
+    expect(calls.at(-1)?.body.price.meta.until).toBe(String(Date.parse(until)));
+  });
+
+  it("refuses the same payment for a different link", async () => {
+    const { token, id } = await start(newHub());
+    const other = await upload(token);
+    const payment = await pay(await extend(token, id));
+    expect((await extend(token, id, { "payment-signature": payment })).status).toBe(200);
+    const reused = await extend(token, other, { "payment-signature": payment });
+    expect(reused.status).toBe(409);
+    expect((await reused.json()).error).toMatch(/another link/);
+    expect(await expiryOf(token, other)).toBe(new Date(clock + DAY_MS).toISOString());
+    expect(chain.submissions).toHaveLength(1);
+  });
+
+  it("keeps a link that expires before the payer's retry, and revives it then", async () => {
+    const { token, id } = await start(newHub());
+    const payment = await pay(await extend(token, id));
+    const until = new Date(clock + 30 * DAY_MS).toISOString();
+    network = "lose-answer";
+    expect((await extend(token, id, { "payment-signature": payment })).status).toBe(503);
+    clock += 2 * DAY_MS; // past the free day
+    expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([]);
+    network = "up";
+    const retry = await extend(token, id, { "payment-signature": payment });
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).expiresAt).toBe(until);
+    // Delivered: the record no longer holds the link.
+    expect((await paymentHolds(payments))({ id } as Parameters<Awaited<ReturnType<typeof paymentHolds>>>[0])).toBe(false);
+  });
+
+  it("reports a payment the hub settled for a link that was revoked meanwhile", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const hub = newHub();
+    const { token, id } = await start(vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.body && JSON.parse(String(init.body)).request.headers["payment-signature"]) {
+        await fetch(`${base}/api/files/${id}`, { method: "DELETE", headers: bearer(token) });
+      }
+      return hub(url, init);
+    }));
+    const res = await extend(token, id, { "payment-signature": await pay(await extend(token, id)) });
+    expect(res.status).toBe(404);
+    expect(chain.submissions).toHaveLength(1);
+    expect(log.mock.calls.join(" ")).toContain(`payment for link ${fileRef(id)} settled at the hub, but extending the link failed`);
+    log.mockRestore();
+  });
+
+  it("refuses a paid answer on another chain or token", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const otherChain = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const { price } = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        kind: "paid", headers: {},
+        paid: { claimKey: "c", protocol: "x402", payer: PAY_TO, amount: price.amount, chainId: 8453, asset: X402.asset, nonce: "n", method: "POST", path: "/api/files/extend", meta: price.meta, settled: true, replayed: false },
+      }), { status: 200 });
+    });
+    const { token, id } = await start(otherChain);
+    const res = await extend(token, id, { "payment-signature": "e30=" });
+    expect(res.status).toBe(502);
+    expect(await expiryOf(token, id)).toBe(new Date(clock + DAY_MS).toISOString());
+    log.mockRestore();
+  });
+
+  it("says the payment service is unavailable when a quote can't be had", async () => {
+    const { token, id } = await start(newHub());
+    network = "down";
+    const res = await extend(token, id);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error).toMatch(/payment service is unavailable/);
+    expect(body).not.toHaveProperty("paymentStatus");
+  });
+
+  it("holds a link from the sweep while its payment request is in flight here", async () => {
     await start(newHub());
     const holds = await paymentHolds(payments);
     const meta = { id: "x" } as Parameters<typeof holds>[0];
     expect(holds(meta)).toBe(false);
     payments.paying.add("x");
     expect(holds(meta)).toBe(true);
+  });
+
+  it("refuses to start with a hub key zoldSeller would refuse", () => {
+    expect(() => openHubPayments(X402, { ...HUB, key: "zsk_short" }, dir)).toThrow(/apiKey/);
   });
 });

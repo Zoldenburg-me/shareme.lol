@@ -49,6 +49,20 @@ describe("loadX402Config", () => {
     expect(() => loadX402Config({ ...hub, X402_HUB_KEY: undefined })).toThrow(/X402_HUB_KEY/);
   });
 
+  it("treats blank values as unset, so a blanked variable switches modes cleanly", () => {
+    const key = `zsk_${"k".repeat(32)}`;
+    expect(loadX402Config({ ...ENV, X402_HUB_URL: "", X402_HUB_KEY: "" })?.settlement.kind).toBe("self");
+    expect(loadX402Config({ X402_PAY_TO: PAY_TO, X402_HUB_URL: "https://hub.example", X402_HUB_KEY: key, X402_GAS_PRIVATE_KEY: "", X402_RPC_URL: "" })?.settlement.kind).toBe("hub");
+    expect(loadX402Config({ X402_PAY_TO: "", X402_HUB_URL: "", X402_HUB_KEY: "", X402_GAS_PRIVATE_KEY: "", X402_RPC_URL: "" })).toBeUndefined();
+  });
+
+  it("refuses settlement variables without X402_PAY_TO, naming them but not their values", () => {
+    for (const name of ["X402_HUB_URL", "X402_HUB_KEY", "X402_GAS_PRIVATE_KEY", "X402_RPC_URL"]) { // gitleaks:allow (variable names, no values)
+      expect(() => loadX402Config({ [name]: "value-not-shown" })).toThrow(new RegExp(`${name} set without X402_PAY_TO`));
+      expect(() => loadX402Config({ [name]: "value-not-shown" })).not.toThrow(/value-not-shown/);
+    }
+  });
+
   it("refuses payments with no way to settle them, or with both", () => {
     expect(() => loadX402Config({ X402_PAY_TO: PAY_TO })).toThrow(/needs a way to settle/);
     expect(() => loadX402Config({ X402_PAY_TO: PAY_TO, X402_HUB_KEY: `zsk_${"k".repeat(32)}` })).toThrow(/without X402_HUB_URL/);
@@ -131,7 +145,7 @@ describe("x402 pricing and wiring", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const key = `zsk_${"s".repeat(32)}`;
     paymentErrorReporter({ ...cfg, settlement: { kind: "hub", url: "https://hub.example", key } })(new Error(`hub refused ${key}`));
-    expect(log.mock.calls.join(" ")).not.toContain(key);
+    expect(log.mock.calls.join(" ")).toBe("[share-host] payment Error:,hub refused <redacted>");
     log.mockRestore();
   });
 

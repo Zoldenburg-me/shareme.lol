@@ -48,6 +48,7 @@ const PRIVATE_KEY = /^0x[0-9a-fA-F]{64}$/;
 // What zoldSeller accepts; checked here too so a bad value stops startup with a message that names the variable.
 const HUB_KEY = /^zsk_[A-Za-z0-9_-]{20,200}$/;
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const SETTLEMENT_VARS = ["X402_HUB_URL", "X402_HUB_KEY", "X402_GAS_PRIVATE_KEY", "X402_RPC_URL"] as const; // gitleaks:allow (variable names, no values)
 // shortcut: Base Sepolia only until the seller side has run against a live chain; add Base (8453) then.
 const CHAINS: Readonly<Record<string, { chainId: number; asset: string; decimals: number; symbol: string }>> = {
   "eip155:84532": { chainId: 84532, asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", decimals: 6, symbol: "USDC" },
@@ -133,7 +134,12 @@ function settlement(env: Env): SelfSettlement | HubSettlement {
 /** Undefined (payments off) unless X402_PAY_TO is set. */
 export function loadX402Config(env: Env): X402Config | undefined {
   const payTo = env.X402_PAY_TO;
-  if (!payTo) return undefined;
+  if (!payTo) {
+    // A half-configured env (say, X402_PAY_TO blanked but a key left behind) must not start with payments silently off.
+    const stray = SETTLEMENT_VARS.filter((name) => env[name]);
+    if (stray.length > 0) throw new Error(`${stray.join(", ")} set without X402_PAY_TO: set X402_PAY_TO too, or blank them to keep payments off`);
+    return undefined;
+  }
   if (!ADDRESS.test(payTo) || /^0x0{40}$/.test(payTo)) throw new Error("X402_PAY_TO must be a non-zero 0x address");
   const network = env.X402_NETWORK || DEFAULT_NETWORK;
   const chain = CHAINS[network];

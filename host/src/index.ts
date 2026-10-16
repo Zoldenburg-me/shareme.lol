@@ -9,7 +9,7 @@ import { SignupLimiter } from "./signupLimiter.js";
 import { FileStore } from "./store.js";
 import { TokenStore } from "./tokens.js";
 import { createReconciler, paymentHolds } from "./extend.js";
-import { openPayments } from "./x402.js";
+import { HUB_RECORD_DAYS, openPayments } from "./x402.js";
 
 const RECONCILE_INTERVAL_MS = 60_000;
 
@@ -54,6 +54,8 @@ async function main(): Promise<void> {
 
   const sweep = async () => {
     try {
+      // Records older than that can't be retried at their first price; forget them before holding links for them.
+      if (payments?.mode === "hub") payments.records.prune(Date.now() - HUB_RECORD_DAYS * 86_400_000);
       // Links with a payment still settling (or settled, not yet extended) stay until it's resolved.
       const keep = payments ? await paymentHolds(payments) : undefined;
       const removed = await store.sweep(Date.now(), keep);
