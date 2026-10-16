@@ -2,7 +2,7 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { pipeline } from "node:stream";
 import { text } from "node:stream/consumers";
 import { createApi, filePath, isApiPath, type Accounts } from "./api.js";
-import type { Payments } from "./extend.js";
+import type { Payments } from "./x402.js";
 import type { HostConfig } from "./config.js";
 import { clientIp, HttpError, sendJson, tooManyRequests } from "./http.js";
 import { FALLBACK_LANDING, type LegalPages } from "./landing.js";

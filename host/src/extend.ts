@@ -1,37 +1,32 @@
+import { createHash } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import { toReqLike, type AcceptResult, type SellerPayment } from "@zold/accept";
+import { decodePaymentSignature, singleUseKey } from "agentpay-hub/protocol";
 import type { HostConfig } from "./config.js";
-import { HttpError, readJson, tooManyRequests } from "./http.js";
-import { fileRef, type PaymentLedger, type PaymentRecord } from "./payments.js";
+import { clientIp, HttpError, readJson } from "./http.js";
 import type { Principal } from "./plans.js";
 import type { FileMeta, FileStore } from "./store.js";
-import {
-  decodePayment, encodeHeader, formatAmount, matchesRequirements, PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER,
-  PAYMENT_SIGNATURE_HEADER, paymentRequired, priceFor, requirementsFor, type Facilitator, type PaymentPayload,
-  type PaymentRequirements, type SettleResponse,
-} from "./x402.js";
+import { formatAmount, priceFor, SELLER_ACCOUNT_ID, type Payments } from "./x402.js";
 import type { X402Config } from "./x402Config.js";
-
-/** How this host takes payments; absent when it takes none. */
-export interface Payments {
-  readonly facilitator: Facilitator;
-  readonly ledger: PaymentLedger;
-}
 
 export interface Extended {
   readonly meta: FileMeta;
   readonly headers: Readonly<Record<string, string>>;
-  /** The facilitator didn't confirm settlement; the extension stands and the payment awaits reconciling. */
-  readonly paymentPending?: boolean;
 }
 
 type Clock = () => number;
+type Refusal = Extract<AcceptResult, { kind: "respond" }>;
 
 const MAX_BODY_BYTES = 1024;
 const DAY_SECONDS = 86_400;
 const HOUR_MS = 3_600_000;
-// Facilitator calls in flight at once, across all tokens; each can take up to its timeout.
-const MAX_PAYMENTS_IN_FLIGHT = 8;
-const PAYMENT_BUSY_RETRY_MS = 5_000;
+const FILE_REF_LENGTH = 16;
+// The path every extension is priced and paid under: file ids are secrets, so they stay out of
+// offers and the payment ledger. A payment still binds to its link through `fileRef` in its meta.
+const PAID_PATH = "/api/files/extend";
+// The payment's outcome is unknown or still settling: the money may move, so the client must not pay again.
+const PENDING_CODES = new Set(["IN_PROGRESS", "SETTLEMENT_TIMEOUT", "SETTLEMENT_UNKNOWN"]);
+const PENDING_RETRY_SECONDS = "5";
 
 function days(seconds: number): string {
   const n = Math.round((seconds / DAY_SECONDS) * 10) / 10;
@@ -39,15 +34,40 @@ function days(seconds: number): string {
 }
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-function nonceOf(payment: PaymentPayload): string | undefined {
-  const auth = payment.payload.authorization;
-  const nonce = isObject(auth) ? auth.nonce : undefined;
-  return typeof nonce === "string" && nonce ? nonce : undefined;
-}
+/** The ledger's stand-in for a file id: sha256 cut to 16 hex, enough to match a live file, useless as a link. */
+export const fileRef = (fileId: string): string => createHash("sha256").update(fileId).digest("hex").slice(0, FILE_REF_LENGTH);
 
-/** A success answer we can actually record: a transaction on the network we asked for. */
-const isSettlement = (s: SettleResponse, requirements: PaymentRequirements): boolean =>
-  typeof s.transaction === "string" && s.transaction !== "" && s.network === requirements.network;
+const decodeBase64Json = (value: string | undefined): unknown =>
+  value === undefined ? undefined : JSON.parse(Buffer.from(value, "base64").toString("utf8"));
+
+/** @zold/accept's refusal as this API's error: its code, its headers, and the fresh offer on a 402. */
+function refused(x402: X402Config, result: Refusal, amount: number): HttpError {
+  const headers = Object.fromEntries(
+    Object.entries(result.headers).map(([k, v]) => [k.toLowerCase(), v]).filter(([k]) => k !== "content-type"),
+  );
+  const parsed: unknown = JSON.parse(result.body);
+  const code = isObject(parsed) && typeof parsed.error === "string" ? parsed.error : "INTERNAL";
+  // Any 5xx may come after a broadcast; retrying the same payment is always safe, paying again is not.
+  if (PENDING_CODES.has(code) || result.status >= 500) {
+    return new HttpError(
+      503,
+      "This payment hasn't settled yet. Once it does, the link is extended without another request. " +
+        "To check, retry this request with the same payment; don't sign a new one.",
+      { ...headers, "retry-after": headers["retry-after"] ?? PENDING_RETRY_SECONDS },
+      { code, paymentStatus: "pending" },
+    );
+  }
+  if (code === "NONCE_REPLAY") {
+    return new HttpError(409, "This payment was already used for another extension (another link, or a quote from an earlier hour). " +
+      "A payment that was still settling extends its own link once it settles; for anything else, get a new quote.", headers, { code });
+  }
+  if (result.status !== 402) return new HttpError(result.status, `Payment not accepted (${code})`, headers, { code });
+  const message = code === "PAYMENT_REQUIRED"
+    ? "Payment required to keep this link longer than your plan allows"
+    : `Payment not accepted (${code}); pay the quote in PAYMENT-REQUIRED`;
+  const price = formatAmount(amount, x402.assetDecimals);
+  return new HttpError(402, message, headers, { code, price, currency: x402.assetSymbol, paymentRequired: decodeBase64Json(headers["payment-required"]) });
+}
 
 async function readTtl(req: IncomingMessage): Promise<number> {
   const body = await readJson(req, MAX_BODY_BYTES);
@@ -60,10 +80,73 @@ async function readTtl(req: IncomingMessage): Promise<number> {
  * POST /api/files/:id/extend: a link may live up to its plan's limit (counted from upload) for free;
  * past that, each started 30 days is paid for with x402, up to the host's longest lifetime.
  */
+/**
+ * Keeps a link until at least `until`, never shortening it, so delivering a payment twice changes nothing.
+ * A link the sweep kept past its old expiry for a pending payment is revived.
+ */
+async function extendTo(store: FileStore, id: string, until: number, now: number): Promise<FileMeta> {
+  const current = store.get(id, now);
+  const meta = current && current.expiresAt >= until ? current : await store.setExpiry(id, until, now, true);
+  if (!meta) throw new HttpError(404, "Link not found");
+  return meta;
+}
+
+/** Extends the link a settled payment bought, then records that durably; safe to repeat. */
+async function deliverPayment(store: FileStore, payments: Payments, id: string, row: Pick<SellerPayment, "claimKey" | "meta">, now: number) {
+  const meta = await extendTo(store, id, Number(row.meta.until), now);
+  payments.acks.add(row.claimKey, now);
+  return meta;
+}
+
+/** Settled payments whose link this host hasn't extended yet, and payments still settling. */
+async function unfinished(payments: Payments): Promise<readonly SellerPayment[]> {
+  // shortcut: scans the whole ledger each run; keep an index of unacked rows once it holds many thousands.
+  return (await payments.ledger.list()).filter((row) =>
+    row.status === "owed" || row.status === "submitted" || (row.status === "settled" && !payments.acks.has(row.claimKey)));
+}
+
+/** What the sweep must keep: links with a payment in flight, still settling, or settled but not yet extended. */
+export async function paymentHolds(payments: Payments): Promise<(meta: FileMeta) => boolean> {
+  const held = new Set((await unfinished(payments)).map((row) => row.meta.fileRef));
+  return (meta) => payments.paying.has(meta.id) || held.has(fileRef(meta.id));
+}
+
+/**
+ * Runs @zold/accept's reconciliation, then extends the links of payments that settled after their request
+ * ended (it timed out, the process died, or the payer never came back). Run it on a timer in the one host
+ * process, and once before the first sweep.
+ */
+export function createReconciler(store: FileStore, payments: Payments) {
+  // Paid but undeliverable (the link was revoked): reported once per process, refunded by hand.
+  const reported = new Set<string>();
+
+  async function deliver(now: number): Promise<number> {
+    const owed = (await unfinished(payments)).filter((row) => row.status === "settled");
+    if (owed.length === 0) return 0;
+    const onDisk = new Map(store.onDisk().map((meta) => [fileRef(meta.id), meta]));
+    let delivered = 0;
+    for (const row of owed) {
+      const meta = onDisk.get(row.meta.fileRef ?? "");
+      if (!meta) {
+        if (!reported.has(row.claimKey)) payments.acceptor.reportError(new Error(`payment for link ${row.meta.fileRef} settled, but the link is gone`));
+        reported.add(row.claimKey);
+        continue;
+      }
+      await deliverPayment(store, payments, meta.id, row, now);
+      delivered += 1;
+    }
+    return delivered;
+  }
+
+  return async function reconcile(now: number) {
+    const report = await payments.acceptor.reconcileOwed();
+    return { ...report, delivered: await deliver(now) };
+  };
+}
+
 export function createExtender(config: HostConfig, store: FileStore, now: Clock, payments?: Payments) {
   // One extension per link at a time, so two payments can't both buy the same days.
   const busy = new Set<string>();
-  const inFlight = new Set<string>();
 
   async function setExpiry(id: string, expiresAt: number): Promise<FileMeta> {
     const meta = await store.setExpiry(id, expiresAt, now());
@@ -71,66 +154,34 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     return meta;
   }
 
-  function paymentNeeded(x402: X402Config, requirements: PaymentRequirements, seconds: number, error?: string): HttpError {
-    // The resource names the service, not the link: file ids are secrets and this goes to the facilitator.
-    const description = `Keep a share-me link up to ${Math.ceil(seconds / DAY_SECONDS)} more day(s)`;
-    const required = paymentRequired(`${config.publicBaseUrl}/api/files/extend`, description, requirements, error);
-    return new HttpError(
-      402,
-      error ?? "Payment required to keep this link longer than your plan allows",
-      { [PAYMENT_REQUIRED_HEADER]: encodeHeader(required) },
-      { price: formatAmount(Number(requirements.amount), x402.assetDecimals), currency: x402.assetSymbol, paymentRequired: required },
-    );
-  }
-
-  // Undo an extension whose payment definitely failed. If even that fails, the link keeps unpaid
-  // time, which is the safe side for the payer; say so loudly.
-  async function revert(meta: FileMeta): Promise<void> {
+  /** The ledger row of the payment this request carries, if this host has seen it before. */
+  async function priorPayment(req: IncomingMessage): Promise<SellerPayment | undefined> {
+    const header = req.headers["payment-signature"];
+    if (!config.x402 || !payments || typeof header !== "string") return undefined;
     try {
-      await store.setExpiry(meta.id, meta.expiresAt, now());
-    } catch (err) {
-      // Only the code: fs error messages contain the file's path, and so its secret id.
-      console.error("[share-host] could not undo an unpaid extension:", (err as NodeJS.ErrnoException).code ?? "unknown error");
+      const authorization = decodePaymentSignature(header).payload.authorization as { from?: unknown; nonce?: unknown } | undefined;
+      const claimKey = singleUseKey({
+        sellerAccountId: SELLER_ACCOUNT_ID, chainId: config.x402.chainId, asset: config.x402.asset,
+        from: String(authorization?.from), nonce: String(authorization?.nonce),
+      });
+      return await payments.ledger.get(claimKey);
+    } catch {
+      return undefined; // malformed: handle() refuses it with the right code
     }
   }
 
-  async function record(pay: Payments, entry: PaymentRecord): Promise<void> {
-    // The money has (maybe) moved, so a ledger failure must not fail the request. Logs leave out
-    // the payer's address (personal data); the nonce finds the transfer on chain.
-    await pay.ledger.append(entry).catch((err: unknown) => {
-      const { payer: _personal, ...loggable } = entry;
-      console.error("[share-host] could not record payment:", JSON.stringify(loggable), (err as NodeJS.ErrnoException).code ?? "unknown error");
-    });
-  }
-
-  async function settle(meta: FileMeta, target: number, payment: PaymentPayload, requirements: PaymentRequirements, seconds: number, payer: string | undefined, x402: X402Config, pay: Payments): Promise<Extended> {
-    // Extend first, then settle: if the file vanished meanwhile, nobody is charged.
-    const extended = await setExpiry(meta.id, target);
-    const base = {
-      at: now(), network: requirements.network, amount: requirements.amount, asset: requirements.asset, fileRef: fileRef(meta.id), seconds,
-      ...(nonceOf(payment) ? { nonce: nonceOf(payment) } : {}), ...(meta.owner ? { owner: meta.owner } : {}),
-    };
-    let settled: SettleResponse | undefined;
+  /** Takes the payment for `target` at `price`, then extends the link and records the delivery. */
+  async function settle(req: IncomingMessage, meta: FileMeta, target: number, price: { amount: bigint; meta: Record<string, string> }, pay: Payments, x402: X402Config): Promise<Extended> {
+    const request = { ...toReqLike(req), path: PAID_PATH, clientIp: clientIp(req, config.trustCfConnectingIp) };
+    pay.paying.add(meta.id);
     try {
-      settled = await pay.facilitator.settle(payment, requirements);
-    } catch (err) {
-      // Logged without the link: file ids are secrets. The ledger entry below carries the nonce.
-      console.error("[share-host] payment settlement had no clear answer, recording it as pending:", (err as Error).message);
-      settled = undefined;
+      // Settles on chain before it returns: the link is only extended once the money has moved.
+      const result = await pay.acceptor.handle(request, { price });
+      if (result.kind === "respond") throw refused(x402, result, Number(price.amount));
+      return { meta: await deliverPayment(store, pay, meta.id, { claimKey: result.paid.claimKey, meta: price.meta }, now()), headers: result.headers };
+    } finally {
+      pay.paying.delete(meta.id);
     }
-    if (settled && !settled.success) {
-      await revert(meta);
-      throw paymentNeeded(x402, requirements, seconds, settled.errorReason ?? "Payment could not be settled");
-    }
-    if (!settled || !isSettlement(settled, requirements)) {
-      // No clear answer: the transfer may already be on chain, so keep what was paid for and
-      // leave a pending record (with the nonce) to reconcile, rather than charge for nothing.
-      await record(pay, { ...base, status: "pending", transaction: "", ...(payer ? { payer } : {}) });
-      return { meta: extended, headers: {}, paymentPending: true };
-    }
-    const settledPayer = settled.payer ?? payer;
-    await record(pay, { ...base, status: "settled", transaction: settled.transaction, ...(settledPayer ? { payer: settledPayer } : {}) });
-    return { meta: extended, headers: { [PAYMENT_RESPONSE_HEADER]: encodeHeader(settled) } };
   }
 
   async function paid(req: IncomingMessage, meta: FileMeta, requestedTarget: number, paidFrom: number, who: Principal): Promise<Extended> {
@@ -140,29 +191,23 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     }
     // Paid time ends on the hour, so a quote still holds when the client comes back with the payment.
     const target = Math.ceil(requestedTarget / HOUR_MS) * HOUR_MS;
+    // Already paid through that hour (e.g. a retry once the payment settled): nothing more to buy.
+    if (target <= meta.expiresAt) return { meta, headers: {} };
     if (target > meta.createdAt + x402.maxLifetimeSeconds * 1000) {
       throw new HttpError(400, `A link can live at most ${days(x402.maxLifetimeSeconds)} in total`);
     }
-    const seconds = Math.ceil((target - paidFrom) / 1000);
-    const requirements = requirementsFor(x402, priceFor(x402, seconds, meta.size));
-    const header = req.headers[PAYMENT_SIGNATURE_HEADER];
-    if (typeof header !== "string" || !header) throw paymentNeeded(x402, requirements, seconds);
-    const payment = decodePayment(header);
-    if (!matchesRequirements(payment, requirements)) {
-      throw paymentNeeded(x402, requirements, seconds, "Payment does not match the price asked; pay the amount in this quote");
-    }
-    // One signed payment can only ever settle once, so never let it buy two extensions at once.
-    const nonce = nonceOf(payment) ?? header;
-    if (inFlight.has(nonce)) throw new HttpError(409, "This payment is already being used; wait for it to finish");
-    if (inFlight.size >= MAX_PAYMENTS_IN_FLIGHT) throw tooManyRequests("Too many payments in progress; try again shortly", PAYMENT_BUSY_RETRY_MS);
-    inFlight.add(nonce);
-    try {
-      const verified = await payments.facilitator.verify(payment, requirements);
-      if (!verified.isValid) throw paymentNeeded(x402, requirements, seconds, verified.invalidReason ?? "Payment is not valid");
-      return await settle(meta, target, payment, requirements, seconds, verified.payer, x402, payments);
-    } finally {
-      inFlight.delete(nonce);
-    }
+    const amount = priceFor(x402, Math.ceil((target - paidFrom) / 1000), meta.size);
+    // A retry of the same payment must price the same: same link, same end, same amount.
+    return settle(req, meta, target, { amount: BigInt(amount), meta: { fileRef: fileRef(meta.id), until: String(target) } }, payments, x402);
+  }
+
+  /** A retry of a payment this host already knows, for this link: resolved as it was priced, whatever the clock says now. */
+  async function retry(req: IncomingMessage, meta: FileMeta, row: SellerPayment): Promise<Extended> {
+    const x402 = config.x402 as X402Config;
+    const pay = payments as Payments;
+    const target = Number(row.meta.until);
+    if (pay.acks.has(row.claimKey) && target <= meta.expiresAt) return { meta, headers: {} };
+    return settle(req, meta, target, { amount: BigInt(row.amount), meta: { ...row.meta } }, pay, x402);
   }
 
   async function apply(req: IncomingMessage, meta: FileMeta, ttlSeconds: number, who: Principal): Promise<Extended> {
@@ -176,13 +221,16 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
 
   return async function extend(req: IncomingMessage, id: string, who: Principal): Promise<Extended> {
     const ttlSeconds = await readTtl(req);
-    const meta = store.get(id, now());
+    const prior = await priorPayment(req);
+    const forThisLink = prior?.meta.fileRef === fileRef(id) ? prior : undefined;
+    // A link kept past its expiry for this very payment is still found, so its payer can check on it.
+    const meta = store.get(id, now()) ?? (forThisLink ? store.onDisk().find((m) => m.id === id) : undefined);
     // A user asking for someone else's link gets the same 404 as for a missing one.
     if (!meta || (who.kind === "user" && meta.owner !== who.id)) throw new HttpError(404, "Link not found");
     if (busy.has(id)) throw new HttpError(409, "This link is already being extended; try again in a moment");
     busy.add(id);
     try {
-      return await apply(req, meta, ttlSeconds, who);
+      return await (forThisLink ? retry(req, meta, forThisLink) : apply(req, meta, ttlSeconds, who));
     } finally {
       busy.delete(id);
     }
