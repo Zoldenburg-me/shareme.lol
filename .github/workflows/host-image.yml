@@ -24,7 +24,8 @@ jobs:
           cache: npm
 
       - name: Test
-        run: npm ci && npm test
+        # age (pinned, SHA-256 checked) for the deploy-secrets test
+        run: scripts/fetch-age.sh && npm ci && npm test
 
       - uses: docker/setup-buildx-action@v3
 

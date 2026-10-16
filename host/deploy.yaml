@@ -3,7 +3,8 @@
 #   share-host   the file host; no public ingress, only reachable by cloudflared
 #   cloudflared  connects out to Cloudflare and serves https://shareme.lol
 #
-# Copy to deploy.local.yaml (gitignored), fill in the two tokens, deploy with Akash Console.
+# Copy to deploy.local.yaml (gitignored). Secrets stay empty here: they live in .env.age and
+# scripts/akash.mjs fills them in memory (README, "Deploy secrets").
 # In Cloudflare Zero Trust -> Networks -> Tunnels -> your tunnel -> Public hostnames, route
 # shareme.lol and www.shareme.lol to service  HTTP  share-host:8080
 # NOTE: env values in an SDL are visible to the provider you lease from.
@@ -14,7 +15,7 @@ services:
   share-host:
     image: ghcr.io/zoldenburg-me/share-me-host:latest
     env:
-      - SHARE_API_TOKEN=REPLACE_WITH_OUTPUT_OF_openssl_rand_-base64_48
+      - SHARE_API_TOKEN=            # secret: from .env.age (secrets.sh set SHARE_API_TOKEN --random)
       - PUBLIC_BASE_URL=https://shareme.lol
       - DEFAULT_TTL_SECONDS=86400
       - MAX_TTL_SECONDS=604800
@@ -30,7 +31,7 @@ services:
       # Optional: paid link extensions over x402 (Base Sepolia), settled by a Zold hub. All three, or none.
       # - X402_PAY_TO=0x...         # the payee the hub has on record for the key
       # - X402_HUB_URL=https://...
-      # - X402_HUB_KEY=zsk_...      # secret
+      # - X402_HUB_KEY=             # secret: from .env.age (secrets.sh set X402_HUB_KEY)
       # Optional: narrow the shareable file types (default: every type the host knows)
       # - ALLOWED_EXTENSIONS=pdf,png,jpg,md,html,csv
     expose:
@@ -56,7 +57,7 @@ services:
         to:
           - global: true
     env:
-      - TUNNEL_TOKEN=REPLACE_WITH_TUNNEL_TOKEN_FROM_CLOUDFLARE
+      - TUNNEL_TOKEN=               # secret: from .env.age (secrets.sh set TUNNEL_TOKEN)
 
 profiles:
   compute:

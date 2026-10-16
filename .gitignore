@@ -6,4 +6,8 @@ coverage/
 .DS_Store
 host/deploy.local.yaml
 .private/
+
+# age (scripts/fetch-age.sh), the encrypted deploy secrets and per-developer public keys (scripts/secrets.sh)
 .toolchain/
+*.age
+.age-recipients

@@ -98,7 +98,7 @@ On its own, payments live in `<DATA_DIR>/payments.db` (SQLite: ledger, used nonc
 - **Accounts:** with `OPEN_SIGNUP=1`, anyone can get a self-service token (`sm_…`). The host stores only its SHA-256 hash. A token can list and revoke only its own links and has a storage quota (`TOKEN_QUOTA_MB`). Signups, API calls, failed logins, uploads and downloads are rate-limited (429 with `Retry-After`); client IPs are kept only in memory, never written to disk, and stop counting after their window (at most an hour); stale entries are cleared as the tables fill. To keep part of each hour's signups for new networks, the host also keeps, in memory only, a pseudonymous keyed hash of each signup's network (IPv4 address, IPv6 /64 and /48) with the signup's time, under a random key that is lost on restart; it drops them at the first signup more than 24 hours later.
 - **Admin token:** `SHARE_API_TOKEN` (compared in constant time) sees every link and can revoke any token with `DELETE /api/tokens/<id>`, which also deletes that token's files. A token can delete itself with `DELETE /api/tokens/me`. The MCP server refuses plain `http://` to a remote host.
 - **Served files are untrusted:** responses carry `Content-Security-Policy: sandbox` (plus `frame-ancestors 'none'`), `nosniff`, `no-referrer`, `noindex` and `no-store`, so an agent-written HTML page can't run scripts on your share domain. Use a dedicated domain that hosts nothing else.
-- **Akash caveats:** SDL env values are visible to the provider you lease from. A redeploy or a provider change can wipe the persistent volume, which kills live links early.
+- **Akash caveats:** SDL env values are visible to the provider you lease from (the deploy secrets are encrypted only at rest on the operator's machine). A redeploy or a provider change can wipe the persistent volume, which kills live links early.
 
 ## Setup
 
@@ -152,7 +152,27 @@ Print the connector token:
 cf tunnels token get <TUNNEL_ID>
 ```
 
-**Deploy.** Edit [`host/deploy.yaml`](host/deploy.yaml): set the image, `SHARE_API_TOKEN`, `PUBLIC_BASE_URL` and `TUNNEL_TOKEN` (the output above). To sell paid extensions, also set `X402_PAY_TO`, `X402_HUB_URL` and `X402_HUB_KEY` (a Zold hub settles; the lease holds no gas key). Don't commit the real values. Then deploy it through [Akash Console](https://console.akash.network) by pasting the SDL and accepting a bid. Set the zone's SSL mode to *Full* or *Full (strict)*; *Flexible* is no longer needed. Uploads go through Cloudflare, which rejects request bodies over 100 MB on free and pro plans, so the SDL sets `MAX_FILE_MB=95`.
+**Deploy secrets.** The secrets never sit on disk in plaintext. They live in `.env.age`, encrypted with [age](https://age-encryption.org) the way the Zold app keeps its own (gitignored, like `.age-recipients` and `.toolchain/`). Your age identity stays in the macOS Keychain under `shareme-age-identity`, or set `AGE_IDENTITY_FILE` to point at an age-plugin-yubikey stub. `scripts/secrets.sh run` decrypts the file into one command's environment only, and [`scripts/akash.mjs`](scripts/akash.mjs) fills the SDL from that environment in memory:
+
+```bash
+scripts/fetch-age.sh                                   # pinned age, SHA-256 checked, into .toolchain/
+scripts/secrets.sh init                                # identity into the Keychain, public key into .age-recipients
+printf '' | .toolchain/age-v1.3.2/age/age -R .age-recipients -o .env.age   # start with an empty file
+scripts/secrets.sh set AKASH_CONSOLE_API_KEY           # each value is read hidden
+scripts/secrets.sh set SHARE_API_TOKEN --random
+scripts/secrets.sh set TUNNEL_TOKEN                    # the output above
+scripts/secrets.sh set X402_HUB_KEY                    # only with paid extensions on
+```
+
+The Akash provider still sees these values at runtime, in the container's environment. The encryption protects your laptop's disk, backups and the repo, not the lease, and not against code running as you while the Keychain is unlocked: it can read the identity (a YubiKey stub through `AGE_IDENTITY_FILE` closes that). In hub mode the lease holds no key that can move money or pay gas; `X402_HUB_KEY` only lets it ask the hub to settle for this seller. `secrets.sh set NAME --replace` keeps the previous file as `.env.prev.age`; delete it once the new value works if you rotated a leaked one. A plaintext `./.env` is still read, for `AKASH_CONSOLE_API_KEY` only.
+
+**Deploy.** Copy [`host/deploy.yaml`](host/deploy.yaml) to `host/deploy.local.yaml`, set the image and `PUBLIC_BASE_URL` (and, to sell paid extensions, uncomment `X402_PAY_TO`, `X402_HUB_URL` and `X402_HUB_KEY`; a Zold hub settles), and leave the secret entries (`SHARE_API_TOKEN`, `TUNNEL_TOKEN`, `X402_HUB_KEY`) empty. `akash.mjs` refuses a value it finds there, and a secret entry written any other way than an unquoted, empty `- NAME=`. Then create the deployment and lease a vetted provider in one step (bids expire within minutes, and the manifest, which holds the secrets, is never written to disk). If no vetted provider bids, `close` it and retry, or run `go <provider>` with one of the bidders it listed (it has to bid again on the new deployment):
+
+```bash
+scripts/secrets.sh run -- node scripts/akash.mjs go
+```
+
+Set the zone's SSL mode to *Full* or *Full (strict)*; *Flexible* is no longer needed. Uploads go through Cloudflare, which rejects request bodies over 100 MB on free and pro plans, so the SDL sets `MAX_FILE_MB=95`.
 
 Check it works:
 
@@ -160,10 +180,10 @@ Check it works:
 curl https://shareme.lol/healthz
 ```
 
-**Redeploy.** Every push to `main` that touches `host/` or `site/` builds `ghcr.io/zoldenburg-me/share-me-host:sha-<commit>`. Once that build finishes, switch the running deployment to it. This keeps the lease and the `/data` volume and needs `AKASH_CONSOLE_API_KEY` in `.env`:
+**Redeploy.** Every push to `main` that touches `host/` or `site/` builds `ghcr.io/zoldenburg-me/share-me-host:sha-<commit>`. Once that build finishes, switch the running deployment to it. This keeps the lease and the `/data` volume, and also resends `share-host`'s env, secrets included, so the same command rotates a key you changed with `secrets.sh set NAME --replace`:
 
 ```bash
-node scripts/akash.mjs update
+scripts/secrets.sh run -- node scripts/akash.mjs update
 ```
 
 ### 4. Register the MCP server with your agent
