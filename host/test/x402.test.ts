@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HttpRequestError } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { acceptOptions, formatAmount, openPayments, priceFor, reportPaymentError } from "../src/x402.js";
+import { openSqlite, SqliteSellerLedger } from "@zold/accept/sqlite";
+import { acceptOptions, formatAmount, openPayments, paymentErrorReporter, priceFor } from "../src/x402.js";
 import { loadX402Config, type X402Config } from "../src/x402Config.js";
 
 const PAY_TO = "0x" + "ab".repeat(20);
@@ -97,7 +98,7 @@ describe("x402 pricing and wiring", () => {
       const rpcDown = new HttpRequestError({ url: config.rpcUrl, details: "fetch failed", body: { method: "eth_blockNumber" } });
       expect(rpcDown.message).toContain("SECRETKEY");
       acceptor.reportError(rpcDown);
-      reportPaymentError(Object.assign(new Error(`payment share-me|84532|0xa|${PAY_TO}|0x1`), { code: "SETTLEMENT_UNKNOWN" }));
+      paymentErrorReporter(config)(Object.assign(new Error(`payment share-me|84532|0xa|${PAY_TO}|0x1`), { code: "SETTLEMENT_UNKNOWN" }));
       const logged = log.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logged).toContain("payment HttpRequestError:");
       expect(logged).toContain("https://sepolia.example");
@@ -105,6 +106,57 @@ describe("x402 pricing and wiring", () => {
       for (const secret of ["SECRETKEY", "/v2/", PAY_TO]) expect(logged).not.toContain(secret);
     } finally {
       log.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never logs the gas key or RPC credentials, even outside a URL", () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const config = { ...cfg, rpcUrl: "https://user:pw-secret-1@rpc.example/v3/PROJECTKEY123?apikey=QUERYKEY456" };
+    const report = paymentErrorReporter(config);
+    report(new Error(`signer ${GAS_KEY} / ${GAS_KEY.slice(2).toUpperCase()} failed`));
+    report(new Error("provider said: invalid project PROJECTKEY123, apikey=QUERYKEY456, auth pw-secret-1"));
+    report(new Error(`raw ${config.rpcUrl} and path /v3/PROJECTKEY123`));
+    const logged = log.mock.calls.map((c) => c.join(" ")).join("\n");
+    for (const secret of [GAS_KEY.slice(2), "PROJECTKEY123", "QUERYKEY456", "pw-secret-1"]) expect(logged.toLowerCase()).not.toContain(secret.toLowerCase());
+    expect(logged).toContain("<redacted>");
+    expect(logged).toContain("provider said: invalid project");
+    log.mockRestore();
+  });
+
+  it("re-delivers paid extensions a 0.1 host marked delivered but never extended, once", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "share-x402-"));
+    try {
+      // A payments.db as a 0.1 host left it: one extension acknowledged, one lost to a crash, one still owed.
+      const old = openSqlite(join(dir, "payments.db"));
+      const legacy = new SqliteSellerLedger(old);
+      const row = (n: number) => ({
+        claimKey: `k${n}`, sellerAccountId: "share-me", protocol: "x402" as const, chainId: 84532, asset: cfg.asset, payer: PAY_TO,
+        nonce: `0x${String(n).repeat(64)}`, amount: "10001", payTo: PAY_TO, validBefore: "1", method: "POST", path: "/api/files/extend",
+        queryDigest: "q", headerDigest: `h${n}`, meta: { fileRef: `ref${n}`, until: "1" },
+      });
+      for (const n of [1, 2, 3]) await legacy.recordVerified(row(n));
+      for (const n of [1, 2]) {
+        await legacy.recordSettled(`k${n}`, `0x${"a".repeat(64)}`);
+        await legacy.markDelivered(`k${n}`);
+      }
+      old.exec("CREATE TABLE share_extension_acks (claim_key TEXT PRIMARY KEY, at INTEGER NOT NULL) STRICT");
+      old.prepare("INSERT INTO share_extension_acks VALUES ('k1', 1)").run();
+      old.close();
+
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const { ledger } = openPayments(cfg, dir, "https://shareme.lol");
+      expect((await ledger.undelivered()).map((r) => r.claimKey)).toEqual(["k2"]);
+      expect(await ledger.get("k1")).toMatchObject({ delivered: true });
+      expect(await ledger.get("k3")).toMatchObject({ status: "owed", delivered: false });
+      expect(log.mock.calls.join(" ")).toContain("1 paid extension(s)");
+
+      // The table is gone, so a second start changes nothing.
+      openPayments(cfg, dir, "https://shareme.lol");
+      expect((await ledger.undelivered()).map((r) => r.claimKey)).toEqual(["k2"]);
+      expect(log).toHaveBeenCalledTimes(1);
+      log.mockRestore();
+    } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
