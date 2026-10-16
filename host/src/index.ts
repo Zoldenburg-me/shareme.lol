@@ -8,8 +8,8 @@ import { renderSetupGuide } from "./setupGuide.js";
 import { SignupLimiter } from "./signupLimiter.js";
 import { FileStore } from "./store.js";
 import { TokenStore } from "./tokens.js";
-import { createReconciler, paymentHolds } from "./extend.js";
-import { HUB_RECORD_DAYS, openPayments } from "./x402.js";
+import { createLegacyDelivery, createReconciler, paymentHolds } from "./extend.js";
+import { assertNoOpenLegacy, HUB_RECORD_DAYS, openPayments } from "./x402.js";
 
 const RECONCILE_INTERVAL_MS = 60_000;
 
@@ -20,6 +20,7 @@ async function main(): Promise<void> {
   const orphans = await purgeOrphanedFiles(store, tokens);
   if (orphans > 0) console.log(`[share-host] removed ${orphans} file(s) left by revoked tokens`);
   const payments = config.x402 && openPayments(config.x402, config.dataDir, config.publicBaseUrl);
+  if (payments?.mode === "hub") await assertNoOpenLegacy(payments);
   const server = createServer(config, store, Date.now, {
     landing: await loadLandingPage(config.landingPage, config.publicBaseUrl),
     setup: renderSetupGuide(config.publicBaseUrl),
@@ -34,9 +35,11 @@ async function main(): Promise<void> {
     console.log(`[share-host] taking x402 payments on ${config.x402.network}, settling them ${by}`);
   }
   // Settles, expires or reports payments whose request ended before settlement, extends their links, prunes used claims.
-  // Only when this host settles: with a hub, the hub holds the ledger.
+  // With a hub, the hub holds the ledger: only payments this host settled before the switch are left to deliver.
   const local = payments?.mode === "local" ? payments : undefined;
-  const reconcileOnce = local && createReconciler(store, local);
+  const legacy = payments?.mode === "hub" ? payments.legacy : undefined;
+  const reportError = (err: unknown) => (local ? local.acceptor.reportError(err) : payments?.mode === "hub" ? payments.reportError(err) : undefined);
+  const reconcileOnce = local ? createReconciler(store, local) : legacy ? createLegacyDelivery(store, legacy, reportError) : undefined;
   const reconcileNow = async () => {
     if (!reconcileOnce) return;
     try {
@@ -45,7 +48,7 @@ async function main(): Promise<void> {
         console.log(`[share-host] reconciled payments: ${r.settled} settled, ${r.refused} refused, ${r.delivered} delivered, ${r.open} open`);
       }
     } catch (err) {
-      local?.acceptor.reportError(err);
+      reportError(err);
     }
   };
   // Before the first sweep, so payments that settled while the host was down extend their links first.

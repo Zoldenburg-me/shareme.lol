@@ -31,6 +31,8 @@ export interface HubPayments {
   /** One request to the hub at its price; undefined when MAX_PAYMENTS_IN_FLIGHT are already out. */
   readonly settle: (req: ReqLike, price: Price) => Promise<AcceptResult | undefined>;
   readonly records: HubPaymentRecords;
+  /** The ledger from when this host settled itself, if payments.db has one: its settled rows still need delivering. */
+  readonly legacy?: LocalPayments["ledger"];
   readonly reportError: (error: unknown) => void;
   readonly paying: Set<string>;
 }
@@ -163,7 +165,24 @@ export function openHubPayments(config: X402Config, hub: HubSettlement, dataDir:
       inFlight -= 1;
     }
   };
-  return { mode: "hub", settle, records: new HubPaymentRecords(openPrivateDb(dataDir)), reportError: onError, paying: new Set() };
+  const db = openPrivateDb(dataDir);
+  const hadLedger = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'seller_payments'").get() !== undefined;
+  if (hadLedger) migrateExtensionAcks(db);
+  return {
+    mode: "hub", settle, records: new HubPaymentRecords(db), reportError: onError, paying: new Set(),
+    ...(hadLedger ? { legacy: new SqliteSellerLedger(db) } : {}),
+  };
+}
+
+/**
+ * Refuses to run a hub while payments this host started settling itself are unresolved: only this host's
+ * own gas key and RPC can finish them. Settled-but-undelivered rows are fine; createLegacyDelivery does those.
+ */
+export async function assertNoOpenLegacy(payments: HubPayments): Promise<void> {
+  const open = ((await payments.legacy?.list()) ?? []).filter((row) => row.status === "owed" || row.status === "submitted");
+  if (open.length === 0) return;
+  throw new Error(`payments.db holds ${open.length} payment(s) this host is still settling itself. ` +
+    "Run once more with X402_GAS_PRIVATE_KEY and X402_RPC_URL (no hub) until the log shows them reconciled, then switch to X402_HUB_URL");
 }
 
 /** Production wiring: a hub if one is configured, else Base Sepolia over the configured RPC with every store in <dataDir>/payments.db. */

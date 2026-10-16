@@ -63,13 +63,22 @@ function pending(mode: Payments["mode"], code: string, headers: Record<string, s
     `${HUB_RETRY} The link is extended when a retry finds the payment settled.`, retryAfter, { code, paymentStatus: "pending" });
 }
 
+function codeOf(result: Refusal): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.body);
+  } catch {
+    return "INTERNAL";
+  }
+  return isObject(parsed) && typeof parsed.error === "string" ? parsed.error : "INTERNAL";
+}
+
 /** @zold/accept's refusal as this API's error: its code, its headers, and the fresh offer on a 402. */
 function refused(x402: X402Config, result: Refusal, amount: number, mode: Payments["mode"], withPayment: boolean): HttpError {
   const headers = Object.fromEntries(
     Object.entries(result.headers).map(([k, v]) => [k.toLowerCase(), v]).filter(([k]) => k !== "content-type"),
   );
-  const parsed: unknown = JSON.parse(result.body);
-  const code = isObject(parsed) && typeof parsed.error === "string" ? parsed.error : "INTERNAL";
+  const code = codeOf(result);
   // Any 5xx may come after a broadcast; retrying the same payment is always safe, paying again is not.
   if (PENDING_CODES.has(code) || result.status >= 500) return pending(mode, code, headers, withPayment);
   if (code === "NONCE_REPLAY" && mode === "hub") {
@@ -113,11 +122,14 @@ async function extendTo(store: FileStore, id: string, until: number, now: number
  * Extends the link a settled payment bought, then marks it delivered (payments are handled with
  * deferDelivery). Delivery is at-least-once, so this is safe to repeat: extendTo never shortens.
  */
-async function deliverPayment(store: FileStore, payments: LocalPayments, id: string, row: Pick<SellerPayment, "claimKey" | "meta">, now: number) {
+async function deliverPayment(store: FileStore, confirm: Confirm, id: string, row: Pick<SellerPayment, "claimKey" | "meta">, now: number) {
   const meta = await extendTo(store, id, Number(row.meta.until), now);
-  await payments.acceptor.confirmDelivery(row.claimKey);
+  await confirm(row.claimKey);
   return meta;
 }
+
+type Confirm = (claimKey: string) => Promise<unknown>;
+type LocalLedger = LocalPayments["ledger"];
 
 /**
  * What the sweep must keep: links with a payment in flight, still settling, or settled but not yet extended.
@@ -126,6 +138,8 @@ async function deliverPayment(store: FileStore, payments: LocalPayments, id: str
 export async function paymentHolds(payments: Payments): Promise<(meta: FileMeta) => boolean> {
   if (payments.mode === "hub") {
     const held = payments.records.undeliveredRefs();
+    // Settled before the switch to a hub, not yet extended: delivered by createLegacyDelivery.
+    for (const row of (await payments.legacy?.undelivered()) ?? []) held.add(row.meta.fileRef);
     return (meta) => payments.paying.has(meta.id) || held.has(fileRef(meta.id));
   }
   // shortcut: the ledger has no query for open rows, so this scans it; add one once it holds many thousands.
@@ -139,32 +153,45 @@ export async function paymentHolds(payments: Payments): Promise<(meta: FileMeta)
  * ended (it timed out, the process died, or the payer never came back). Run it on a timer in the one host
  * process, and once before the first sweep.
  */
-export function createReconciler(store: FileStore, payments: LocalPayments) {
+/** Extends the links of settled payments not yet delivered, oldest first; a link that is gone is reported once. */
+function createDelivery(store: FileStore, ledger: LocalLedger, confirm: Confirm, report: (error: unknown) => void) {
   // Paid but undeliverable (the link was revoked): reported once per process, refunded by hand.
   const reported = new Set<string>();
-
-  async function deliver(now: number): Promise<number> {
-    const owed = await payments.ledger.undelivered();
+  return async function deliver(now: number): Promise<number> {
+    const owed = await ledger.undelivered();
     if (owed.length === 0) return 0;
     const onDisk = new Map(store.onDisk().map((meta) => [fileRef(meta.id), meta]));
     let delivered = 0;
     for (const row of owed) {
       const meta = onDisk.get(row.meta.fileRef ?? "");
       if (!meta) {
-        if (!reported.has(row.claimKey)) payments.acceptor.reportError(new Error(`payment for link ${row.meta.fileRef} settled, but the link is gone`));
+        if (!reported.has(row.claimKey)) report(new Error(`payment for link ${row.meta.fileRef} settled, but the link is gone`));
         reported.add(row.claimKey);
         continue;
       }
-      await deliverPayment(store, payments, meta.id, row, now);
+      await deliverPayment(store, confirm, meta.id, row, now);
       delivered += 1;
     }
     return delivered;
-  }
+  };
+}
 
+export function createReconciler(store: FileStore, payments: LocalPayments) {
+  const deliver = createDelivery(store, payments.ledger, (k) => payments.acceptor.confirmDelivery(k), (e) => payments.acceptor.reportError(e));
   return async function reconcile(now: number) {
     const report = await payments.acceptor.reconcileOwed();
     return { ...report, delivered: await deliver(now) };
   };
+}
+
+/**
+ * After a switch from settling here to a hub: extends the links of payments this host settled itself but
+ * never delivered. Startup refuses a ledger with payments still settling (see assertNoOpenLegacy), so only
+ * delivery is left, and it needs no chain access.
+ */
+export function createLegacyDelivery(store: FileStore, ledger: LocalLedger, report: (error: unknown) => void) {
+  const deliver = createDelivery(store, ledger, (k) => ledger.markDelivered(k), report);
+  return async (now: number) => ({ settled: 0, refused: 0, open: 0, delivered: await deliver(now) });
 }
 
 export function createExtender(config: HostConfig, store: FileStore, now: Clock, payments?: Payments) {
@@ -206,7 +233,8 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     // deferDelivery: marked delivered only once the link is extended, so a failure here is retried.
     const result = await pay.acceptor.handle(request, { price, deferDelivery: true });
     if (result.kind === "respond") throw refused(x402, result, Number(price.amount), "local", true);
-    return { meta: await deliverPayment(store, pay, meta.id, { claimKey: result.paid.claimKey, meta: price.meta }, now()), headers: result.headers };
+    const confirm = (k: string) => pay.acceptor.confirmDelivery(k);
+    return { meta: await deliverPayment(store, confirm, meta.id, { claimKey: result.paid.claimKey, meta: price.meta }, now()), headers: result.headers };
   }
 
   async function settleAtHub(request: ReqLike, meta: FileMeta, price: PaidPrice, pay: HubPayments, x402: X402Config): Promise<Extended> {
@@ -218,7 +246,16 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     if (!result) {
       throw new HttpError(503, `Too many payments are in progress. ${HUB_RETRY}`, { "retry-after": PENDING_RETRY_SECONDS }, { code: "BUSY", paymentStatus: "pending" });
     }
-    if (result.kind === "respond") throw refused(x402, result, Number(price.amount), "hub", header !== undefined);
+    if (result.kind === "respond") {
+      if (key !== undefined) {
+        const code = codeOf(result);
+        // Only a payment the hub is settling holds its link; one it refused (bad signature, no funds,
+        // wrong amount) holds nothing. Without an answer the record stays, unheld, so a retry keeps its price.
+        if (PENDING_CODES.has(code)) pay.records.markHeld(key);
+        else if (result.status < 500) pay.records.forget(key, price.meta.fileRef);
+      }
+      throw refused(x402, result, Number(price.amount), "hub", header !== undefined);
+    }
     if (result.paid.chainId !== x402.chainId || result.paid.asset.toLowerCase() !== x402.asset.toLowerCase()) {
       pay.reportError(new Error(`the hub answered paid on chain ${result.paid.chainId} in ${result.paid.asset}, not in this host's asset`));
       throw new HttpError(502, "The payment service answered for another chain or token, so nothing was extended. Contact support; don't pay again.");
