@@ -11,11 +11,11 @@ import { generatePrivateKey } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/app.js";
 import type { HostConfig } from "../src/config.js";
-import { createReconciler, fileRef } from "../src/extend.js";
+import { createReconciler, fileRef, paymentHolds } from "../src/extend.js";
 import { SignupLimiter } from "../src/signupLimiter.js";
 import { FileStore } from "../src/store.js";
 import { TokenStore } from "../src/tokens.js";
-import { acceptOptions } from "../src/x402.js";
+import { acceptOptions, ExtensionAcks } from "../src/x402.js";
 import type { X402Config } from "../src/x402Config.js";
 
 const ADMIN = "a".repeat(40);
@@ -93,6 +93,8 @@ describe("extending links and paying with x402", () => {
     store = await FileStore.open(dir);
     payments = {
       ledger,
+      acks: new ExtensionAcks(db),
+      paying: new Set(),
       acceptor: accept({ ...acceptOptions(X402, "https://shareme.lol"), ...acceptOverrides }, {
         ledger, claims: new SqliteSingleUseStore(db), rateLimiter: new SqliteRateLimiter(db), chain, submitter: chain, onError,
         // Each poll lets time pass, so a settlement that never confirms runs into its timeout.
@@ -245,11 +247,14 @@ describe("extending links and paying with x402", () => {
     const again = await extend(token, a.id, 30 * DAY, { "payment-signature": payment });
     expect(again.status).toBe(200);
     expect(again.headers.get("payment-response")).toBeNull();
-    // The same payment for more days, or for another link, is a replay.
+    // The same payment asking for more days still only buys what it was priced for.
     const longer = await extend(token, a.id, 40 * DAY, { "payment-signature": payment });
-    expect(longer.status).toBe(409);
-    expect(await longer.json()).toMatchObject({ code: "NONCE_REPLAY" });
-    expect((await extend(token, b.id, 30 * DAY, { "payment-signature": payment })).status).toBe(409);
+    expect(longer.status).toBe(200);
+    expect((await longer.json()).expiresAt).toBe(paidUntil);
+    // For another link it is a replay.
+    const other = await extend(token, b.id, 30 * DAY, { "payment-signature": payment });
+    expect(other.status).toBe(409);
+    expect(await other.json()).toMatchObject({ code: "NONCE_REPLAY" });
 
     expect(chain.submissions).toHaveLength(1);
     expect(balance(PAY_TO)).toBe(10_001n);
@@ -328,7 +333,7 @@ describe("extending links and paying with x402", () => {
     const reconcile = createReconciler(store, payments);
     expect(await reconcile(clock)).toMatchObject({ settled: 1, delivered: 1 });
     expect(await expiryOf(token, id)).toBe(paidUntil);
-    expect(await ledger.list()).toMatchObject([{ status: "settled", delivered: true }]);
+    expect(payments.acks.has((await ledger.list())[0].claimKey)).toBe(true);
     expect(await reconcile(clock)).toMatchObject({ settled: 0, delivered: 0 });
 
     // The payer's retry with the same payment gets the receipt and changes nothing.
@@ -354,6 +359,67 @@ describe("extending links and paying with x402", () => {
     await reconcile(clock);
     expect(onError.mock.calls.filter(([e]) => /link is gone/.test(String((e as Error).message)))).toHaveLength(1);
     expect(await ledger.list()).toMatchObject([{ status: "settled", delivered: false }]);
+  });
+
+  it("extends the link from the reconciler when the extension failed after settlement", async () => {
+    await start();
+    const { token } = await newToken();
+    const { id } = await (await upload(token)).json();
+    const payment = await pay(await extend(token, id, 30 * DAY));
+    // The payment settles (and @zold/accept marks it delivered), then writing the new expiry fails.
+    vi.spyOn(store, "setExpiry").mockRejectedValueOnce(Object.assign(new Error("disk full"), { code: "ENOSPC" }));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await extend(token, id, 30 * DAY, { "payment-signature": payment })).status).toBe(500);
+    expect(await ledger.list()).toMatchObject([{ status: "settled", delivered: true }]);
+    expect(payments.acks.has((await ledger.list())[0].claimKey)).toBe(false);
+
+    expect(await createReconciler(store, payments)(clock)).toMatchObject({ delivered: 1 });
+    expect(await expiryOf(token, id)).toBe(new Date(clock + 30 * DAY_MS).toISOString());
+    expect(payments.acks.has((await ledger.list())[0].claimKey)).toBe(true);
+    expect(await createReconciler(store, payments)(clock)).toMatchObject({ delivered: 0 });
+    expect(chain.submissions).toHaveLength(1);
+  });
+
+  it("keeps a link that expires while its payment settles, and revives it when the payer checks back", async () => {
+    chain = newChain(false);
+    clock += 60_000;
+    await start({}, { settlementTimeoutMs: 3_000, pollIntervalMs: 1_000 });
+    const { token } = await newToken();
+    const { id } = await (await upload(token, { "x-ttl-seconds": "60" })).json();
+    const payment = await pay(await extend(token, id, 30 * DAY));
+    const quotedUntil = Math.ceil((clock + 30 * DAY_MS) / 3_600_000) * 3_600_000;
+    expect((await extend(token, id, 30 * DAY, { "payment-signature": payment })).status).toBe(503);
+
+    // Mined soon after, but nobody has delivered it yet. The old expiry passes and the hour rolls over;
+    // the sweep keeps the link for the settled, not yet extended payment.
+    chain.mine(3);
+    clock += 2 * 3_600_000;
+    expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([]);
+    expect((await fetch(`${base}/f/${id}/a.md`)).status).toBe(404);
+
+    // The payer's retry, same arguments in a later hour, resolves the payment as it was priced.
+    const retry = await extend(token, id, 30 * DAY, { "payment-signature": payment });
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).expiresAt).toBe(new Date(quotedUntil).toISOString());
+    expect(decode(retry.headers.get("payment-response"))).toMatchObject({ success: true });
+    expect(chain.submissions).toHaveLength(1);
+    expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([]);
+  });
+
+  it("lets the sweep delete a held link once its payment is conclusively refused", async () => {
+    chain = newChain(false);
+    await start({}, { settlementTimeoutMs: 3_000, pollIntervalMs: 1_000 });
+    const { token } = await newToken();
+    const { id } = await (await upload(token, { "x-ttl-seconds": "60" })).json();
+    const payment = await pay(await extend(token, id, 30 * DAY));
+    expect((await extend(token, id, 30 * DAY, { "payment-signature": payment })).status).toBe(503);
+    chain.dropPending(); // never mined, and now never will be
+
+    clock += 10 * 60_000; // past the authorization's validBefore and the grace period
+    expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([]);
+    expect(await createReconciler(store, payments)(clock)).toMatchObject({ refused: 1, delivered: 0 });
+    expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([id]);
+    expect(balance(PAY_TO)).toBe(0n);
   });
 
   it("quotes paid time to the hour, so a quote survives the round trip to the wallet", async () => {
