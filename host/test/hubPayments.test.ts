@@ -5,17 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accept, FakeFiatToken, hostedSettle } from "@zold/accept";
 import { openSqlite, SqliteRateLimiter, SqliteSellerLedger, SqliteSingleUseStore } from "@zold/accept/sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { evmX402Signer } from "agentpay-hub";
 import { encodePaymentSignature } from "agentpay-hub/protocol";
 import { generatePrivateKey } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/app.js";
 import type { HostConfig } from "../src/config.js";
-import { fileRef, paymentHolds } from "../src/extend.js";
+import { createLegacyDelivery, fileRef, paymentHolds } from "../src/extend.js";
 import { SignupLimiter } from "../src/signupLimiter.js";
 import { FileStore } from "../src/store.js";
 import { TokenStore } from "../src/tokens.js";
-import { acceptOptions, openHubPayments, type HubPayments } from "../src/x402.js";
+import { acceptOptions, assertNoOpenLegacy, openHubPayments, type HubPayments } from "../src/x402.js";
 import type { HubSettlement, X402Config } from "../src/x402Config.js";
 
 const ADMIN = "a".repeat(40);
@@ -59,7 +60,7 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
   const newHub = () => {
     const db = openSqlite(":memory:");
     hubLedger = new SqliteSellerLedger(db);
-    const acceptor = accept({ ...acceptOptions(X402, "https://shareme.lol"), sellerAccountId: "hub:shareme" }, {
+    const acceptor = accept({ ...acceptOptions(X402, "https://shareme.lol"), sellerAccountId: "hub:shareme", settlementTimeoutMs: 3_000, pollIntervalMs: 1_000 }, {
       ledger: hubLedger, claims: new SqliteSingleUseStore(db), rateLimiter: new SqliteRateLimiter(db), chain, submitter: chain,
       onError: () => undefined, now: () => clock, sleep: async (ms: number) => { clock += ms; },
     });
@@ -105,14 +106,21 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
     return encodePaymentSignature({ x402Version: 2, accepted, payload: (await buyer.signX402(accepted)).payload });
   };
 
+  /** A fake USDC with the buyer funded; without autoMine nothing is mined until `mine()`. */
+  const newChain = (autoMine: boolean) => {
+    const fake = new FakeFiatToken({
+      chainId: X402.chainId, asset: X402.asset, nowSec: () => Math.floor(clock / 1000), autoMine,
+      domain: { name: "USDC", version: "2", chainId: X402.chainId, verifyingContract: X402.asset as `0x${string}` },
+    });
+    fake.mint(buyer.address, 1_000_000n);
+    return fake;
+  };
+  const isHeld = async (id: string) => (await paymentHolds(payments))({ id } as Parameters<Awaited<ReturnType<typeof paymentHolds>>>[0]);
+
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "share-hub-"));
     clock = Date.parse("2026-10-09T12:00:00Z");
-    chain = new FakeFiatToken({
-      chainId: X402.chainId, asset: X402.asset, nowSec: () => Math.floor(clock / 1000), autoMine: true,
-      domain: { name: "USDC", version: "2", chainId: X402.chainId, verifyingContract: X402.asset as `0x${string}` },
-    });
-    chain.mint(buyer.address, 1_000_000n);
+    chain = newChain(true);
     calls = [];
     network = "up";
   });
@@ -219,20 +227,84 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
     expect(chain.submissions).toHaveLength(1);
   });
 
-  it("keeps a link that expires before the payer's retry, and revives it then", async () => {
+  it("keeps a link the hub is still settling a payment for past its expiry, and revives it on the retry", async () => {
+    chain = newChain(false);
+    clock += 60_000; // off the hour, as a real request would be
     const { token, id } = await start(newHub());
     const payment = await pay(await extend(token, id));
-    const until = new Date(clock + 30 * DAY_MS).toISOString();
-    network = "lose-answer";
-    expect((await extend(token, id, { "payment-signature": payment })).status).toBe(503);
-    clock += 2 * DAY_MS; // past the free day
+    const until = new Date(Math.ceil((clock + 30 * DAY_MS) / 3_600_000) * 3_600_000).toISOString();
+    const slow = await extend(token, id, { "payment-signature": payment });
+    expect(slow.status).toBe(503);
+    expect(await slow.json()).toMatchObject({ code: "SETTLEMENT_TIMEOUT", paymentStatus: "pending" });
+    // Mined soon after; the payer only comes back after the free day has passed.
+    chain.mine(3);
+    clock += 2 * DAY_MS;
     expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([]);
-    network = "up";
     const retry = await extend(token, id, { "payment-signature": payment });
     expect(retry.status).toBe(200);
     expect((await retry.json()).expiresAt).toBe(until);
-    // Delivered: the record no longer holds the link.
-    expect((await paymentHolds(payments))({ id } as Parameters<Awaited<ReturnType<typeof paymentHolds>>>[0])).toBe(false);
+    expect(await isHeld(id)).toBe(false); // delivered: the record holds nothing now
+  });
+
+  it("lets a refused payment hold nothing, so its link expires on time", async () => {
+    const { token, id } = await start(newHub());
+    const broke = evmX402Signer(generatePrivateKey(), () => clock); // no USDC
+    const accepted = decode((await extend(token, id)).headers.get("payment-required")).accepts[0];
+    const unfunded = encodePaymentSignature({ x402Version: 2, accepted, payload: (await broke.signX402(accepted)).payload });
+    const res = await extend(token, id, { "payment-signature": unfunded });
+    expect(res.status).toBe(402);
+    expect((await res.json()).code).toBe("INSUFFICIENT_FUNDS");
+    expect(await isHeld(id)).toBe(false);
+    clock += 2 * DAY_MS;
+    expect(await store.sweep(clock, await paymentHolds(payments))).toEqual([id]);
+  });
+
+  it("holds nothing for a payment whose answer was lost, but still retries it at its first price", async () => {
+    const { token, id } = await start(newHub());
+    const payment = await pay(await extend(token, id));
+    network = "lose-answer";
+    expect((await extend(token, id, { "payment-signature": payment })).status).toBe(503);
+    expect(await isHeld(id)).toBe(false);
+  });
+
+  describe("after a switch from settling here", () => {
+    /** A row the host's own ledger recorded while it settled payments itself, in the same payments.db. */
+    const legacyRow = async (db: DatabaseSync, id: string, status: "settled" | "submitted") => {
+      const ledger = new SqliteSellerLedger(db);
+      const claimKey = `legacy-${status}`;
+      await ledger.recordVerified({
+        claimKey, sellerAccountId: "share-me", protocol: "x402", chainId: 84532, asset: X402.asset, payer: buyer.address, nonce: `0x${"01".repeat(32)}`,
+        amount: "10001", payTo: PAY_TO, validBefore: String(Math.floor(clock / 1000) + 120), method: "POST", path: "/api/files/extend",
+        queryDigest: "q", headerDigest: "h", meta: { fileRef: fileRef(id), until: String(clock + 30 * DAY_MS) },
+      });
+      await ledger.recordSubmitted(claimKey, `0x${"aa".repeat(32)}`);
+      if (status === "settled") await ledger.recordSettled(claimKey, `0x${"aa".repeat(32)}`);
+    };
+
+    it("delivers payments it settled itself but never extended, holding the link until then", async () => {
+      await start(newHub());
+      const { token } = (await (await fetch(`${base}/api/tokens`, { method: "POST" })).json()) as { token: string };
+      const id = await upload(token);
+      await legacyRow(openSqlite(join(dir, "payments.db")), id, "settled");
+      const hub = openHubPayments(X402, HUB, dir, newHub()); // reopened, as at the next start
+      await assertNoOpenLegacy(hub);
+      payments = hub;
+      expect(await isHeld(id)).toBe(true);
+      expect(await createLegacyDelivery(store, hub.legacy as NonNullable<HubPayments["legacy"]>, () => undefined)(clock)).toMatchObject({ delivered: 1 });
+      expect(await expiryOf(token, id)).toBe(new Date(clock + 30 * DAY_MS).toISOString());
+      expect(await isHeld(id)).toBe(false);
+    });
+
+    it("refuses to start while a payment it started settling itself is unresolved", async () => {
+      const { id } = await start(newHub());
+      await legacyRow(openSqlite(join(dir, "payments.db")), id, "submitted");
+      await expect(assertNoOpenLegacy(openHubPayments(X402, HUB, dir, newHub()))).rejects.toThrow(/1 payment\(s\) this host is still settling itself/);
+    });
+
+    it("starts a hub on a fresh data dir with no ledger to drain", async () => {
+      await start(newHub());
+      expect(payments.legacy).toBeUndefined();
+    });
   });
 
   it("reports a payment the hub settled for a link that was revoked meanwhile", async () => {
