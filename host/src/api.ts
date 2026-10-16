@@ -110,7 +110,7 @@ export function createApi(config: HostConfig, store: FileStore, now: Clock, limi
     req.resume();
     if (!accounts || !config.openSignup) throw new HttpError(403, "Signup is closed on this host; ask its operator for a token");
     if (!accounts.limiter.allow(clientIp(req, config.trustCfConnectingIp), now())) {
-      throw new HttpError(429, "Too many signups from your network; try again in an hour");
+      throw new HttpError(429, "Too many signups right now; try again within an hour");
     }
     const { token, record } = await accounts.tokens.issue(now());
     const { allowedExtensions, maxFileBytes, maxTtlSeconds, tokenQuotaBytes } = config;

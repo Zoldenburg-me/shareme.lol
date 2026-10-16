@@ -39,6 +39,16 @@ describe("SignupLimiter", () => {
     expect(limiter.allow("10.0.0.1", 6)).toBe(false);
     expect(networkOf("1::2:3:4:5:6:7")).toBe("1:0:2:3::/64");
     expect(networkOf("fe80::1%eth0")).toBe("fe80:0:0:0::/64");
+    expect(networkOf("0:0:0:0:0:ffff:1.2.3.4")).toBe("1.2.3.4");
+    expect(networkOf("::ffff:0102:0304")).toBe("1.2.3.4");
+  });
+
+  it("also limits a whole IPv6 /48, so rotating /64s inside it doesn't help", () => {
+    const limiter = new SignupLimiter(1, 1000);
+    const rotated = [1, 2, 3, 4].map((n) => limiter.allow(`2001:db8:1:${n}::1`, n));
+    expect(rotated).toEqual([true, true, false, false]);
+    expect(limiter.allow("2001:db8:2:1::1", 5)).toBe(true);
+    expect([6, 7].map((n) => limiter.allow("10.0.0.1", n))).toEqual([true, false]);
   });
 
   it("spends at most an hourly share of the daily cap, so one burst can't block signups for a day", () => {
