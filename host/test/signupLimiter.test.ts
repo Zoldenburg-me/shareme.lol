@@ -36,6 +36,27 @@ describe("SignupLimiter", () => {
     expect(limiter.allow("10.1.0.2", DAY + HOUR - 1)).toBe(true);
   });
 
+  it("gives each clock hour its share, not each rolling hour", () => {
+    const limiter = new SignupLimiter(10, 48);
+    const allowed = [HOUR - 2, HOUR - 1, HOUR, HOUR + 1].map((t, n) => limiter.allow(`10.0.0.${n}`, t));
+    expect(allowed).toEqual([true, true, true, true]);
+    expect(limiter.allow("10.0.0.9", HOUR + 2)).toBe(false);
+  });
+
+  it("does not record a refused attempt against the network's window", () => {
+    const limiter = new SignupLimiter(1, 1000);
+    expect(limiter.allow("10.0.0.1", 0)).toBe(true);
+    expect(limiter.allow("10.0.0.1", 10)).toBe(false);
+    expect(limiter.allow("10.0.0.1", HOUR + 1)).toBe(true);
+  });
+
+  it("holds an IPv4 address (plain or mapped) to the per-network limit, with no wider site allowance", () => {
+    const limiter = new SignupLimiter(1, 1000);
+    expect(limiter.allow("192.0.2.1", 0)).toBe(true);
+    expect(limiter.allow("192.0.2.1", 1)).toBe(false);
+    expect(limiter.allow("::ffff:192.0.2.1", 2)).toBe(false);
+  });
+
   it("keys IPv6 by /64, so one actor's many addresses share the per-IP limit", () => {
     const limiter = new SignupLimiter(2, 100);
     expect(limiter.allow("2001:db8:1:2::1", 0)).toBe(true);
