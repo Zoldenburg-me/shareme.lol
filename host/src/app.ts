@@ -11,6 +11,7 @@ import { createLimits } from "./limits.js";
 import { isRenderableMarkdown, renderMarkdownPage } from "./markdownView.js";
 import { renderSetupGuide } from "./setupGuide.js";
 import { FileTooLargeError, type FileStore } from "./store.js";
+import { paceUpload } from "./uploadPace.js";
 
 type Clock = () => number;
 
@@ -178,6 +179,13 @@ export function createServer(
   }
 
   const server = createHttpServer((req, res) => {
+    // A body still arriving after the response is held to the upload pace (routes that never read
+    // their body are cut after one window), so trickling it can't hold the socket for 30 minutes.
+    res.once("finish", () => {
+      if (req.readableEnded) return;
+      const { body } = paceUpload(req, config.minUploadBytesPerSecond, config.uploadPaceWindowMs);
+      body.on("error", () => req.destroy()).resume();
+    });
     route(req, res).catch((err: unknown) => {
       const status = err instanceof HttpError ? err.status : err instanceof FileTooLargeError ? 413 : 500;
       if (status === 500) console.error(`[share-host] ${req.method} ${redactIds(req.url)} failed:`, err);
