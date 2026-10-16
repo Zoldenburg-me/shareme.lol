@@ -219,7 +219,7 @@ npx -y share-me-mcp@0.1.0 login https://shareme.lol
 | `MAX_FILES_PER_TOKEN` | `200` | Files each self-service token may have shared at once |
 | `MAX_CONCURRENT_UPLOADS_PER_TOKEN` | `2` | Uploads one self-service token may have in progress at once; more get 429 |
 | `MIN_UPLOAD_BYTES_PER_SECOND` / `UPLOAD_PACE_WINDOW_SECONDS` | `1024` / `10` | An upload that sends less than this in any window is aborted with 408, so a stalled upload can't hold storage |
-| `SIGNUPS_PER_IP_PER_HOUR` / `SIGNUPS_PER_DAY` | `5` / `500` | Signup throttle |
+| `SIGNUPS_PER_IP_PER_HOUR` / `SIGNUPS_PER_DAY` | `5` / `500` | Signup throttle (per IPv4 address or IPv6 /64; any one hour gets at most 1/24 of the daily cap) |
 | `TRUST_CF_CONNECTING_IP` | off | `1` takes the client IP from Cloudflare's `CF-Connecting-IP`; only when every request comes through Cloudflare |
 | `API_REQUESTS_PER_IP_PER_MINUTE` | `120` | Requests to `/api` per client IP; over it the host answers 429 with `Retry-After` |
 | `AUTH_FAILURES_PER_IP_PER_HOUR` | `30` | Wrong tokens per client IP before that IP is locked out of `/api` for the rest of the hour (valid tokens from it still work) |
