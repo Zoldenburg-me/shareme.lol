@@ -5,7 +5,7 @@ import type { HostConfig } from "./config.js";
 import { clientIp, HttpError, readJson } from "./http.js";
 import type { Principal } from "./plans.js";
 import type { FileMeta, FileStore } from "./store.js";
-import { formatAmount, priceFor, type Payments } from "./x402.js";
+import { formatAmount, priceFor, type LocalPayments, type Payments } from "./x402.js";
 import type { X402Config } from "./x402Config.js";
 
 export interface Extended {
@@ -94,14 +94,18 @@ async function extendTo(store: FileStore, id: string, until: number, now: number
  * Extends the link a settled payment bought, then marks it delivered (payments are handled with
  * deferDelivery). Delivery is at-least-once, so this is safe to repeat: extendTo never shortens.
  */
-async function deliverPayment(store: FileStore, payments: Payments, id: string, row: Pick<SellerPayment, "claimKey" | "meta">, now: number) {
+async function deliverPayment(store: FileStore, payments: LocalPayments, id: string, row: Pick<SellerPayment, "claimKey" | "meta">, now: number) {
   const meta = await extendTo(store, id, Number(row.meta.until), now);
   await payments.acceptor.confirmDelivery(row.claimKey);
   return meta;
 }
 
-/** What the sweep must keep: links with a payment in flight, still settling, or settled but not yet extended. */
+/**
+ * What the sweep must keep: links with a payment in flight, still settling, or settled but not yet extended.
+ * With a hub, only requests in flight here: the hub holds the ledger.
+ */
 export async function paymentHolds(payments: Payments): Promise<(meta: FileMeta) => boolean> {
+  if (payments.mode === "hub") return (meta) => payments.paying.has(meta.id);
   // shortcut: the ledger has no query for open rows, so this scans it; add one once it holds many thousands.
   const open = (await payments.ledger.list()).filter((row) => row.status === "owed" || row.status === "submitted");
   const held = new Set([...open, ...(await payments.ledger.undelivered())].map((row) => row.meta.fileRef));
@@ -113,7 +117,7 @@ export async function paymentHolds(payments: Payments): Promise<(meta: FileMeta)
  * ended (it timed out, the process died, or the payer never came back). Run it on a timer in the one host
  * process, and once before the first sweep.
  */
-export function createReconciler(store: FileStore, payments: Payments) {
+export function createReconciler(store: FileStore, payments: LocalPayments) {
   // Paid but undeliverable (the link was revoked): reported once per process, refunded by hand.
   const reported = new Set<string>();
 
@@ -154,7 +158,7 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
   /** The ledger row of the payment this request carries, if this host has seen it before (only to price it). */
   async function priorPayment(req: IncomingMessage): Promise<SellerPayment | undefined> {
     const header = req.headers["payment-signature"];
-    return payments && typeof header === "string" ? payments.acceptor.lookup(header) : undefined;
+    return payments?.mode === "local" && typeof header === "string" ? payments.acceptor.lookup(header) : undefined;
   }
 
   /** Takes the payment for `target` at `price`, then extends the link and records the delivery. */
@@ -163,10 +167,15 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
     pay.paying.add(meta.id);
     try {
       // Settles on chain before it returns: the link is only extended once the money has moved.
-      // deferDelivery: marked delivered only once the link is extended, so a failure here is retried.
-      const result = await pay.acceptor.handle(request, { price, deferDelivery: true });
+      // Locally with deferDelivery: marked delivered only once the link is extended, so a failure here is retried.
+      // With a hub: a failure here is retried by the payer with the same payment, which the hub replays.
+      const result = pay.mode === "local"
+        ? await pay.acceptor.handle(request, { price, deferDelivery: true })
+        : await pay.sellerFor(price).handle(request);
       if (result.kind === "respond") throw refused(x402, result, Number(price.amount));
-      return { meta: await deliverPayment(store, pay, meta.id, { claimKey: result.paid.claimKey, meta: price.meta }, now()), headers: result.headers };
+      const row = { claimKey: result.paid.claimKey, meta: price.meta };
+      const extended = pay.mode === "local" ? await deliverPayment(store, pay, meta.id, row, now()) : await extendTo(store, meta.id, Number(price.meta.until), now());
+      return { meta: extended, headers: result.headers };
     } finally {
       pay.paying.delete(meta.id);
     }
@@ -192,7 +201,7 @@ export function createExtender(config: HostConfig, store: FileStore, now: Clock,
   /** A retry of a payment this host already knows, for this link: resolved as it was priced, whatever the clock says now. */
   async function retry(req: IncomingMessage, meta: FileMeta, row: SellerPayment): Promise<Extended> {
     const x402 = config.x402 as X402Config;
-    const pay = payments as Payments;
+    const pay = payments as LocalPayments; // only a local ledger finds a prior payment
     const target = Number(row.meta.until);
     if (row.delivered && target <= meta.expiresAt) return { meta, headers: {} };
     return settle(req, meta, target, { amount: BigInt(row.amount), meta: { ...row.meta } }, pay, x402);

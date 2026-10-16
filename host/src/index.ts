@@ -29,9 +29,14 @@ async function main(): Promise<void> {
     tokens,
     limiter: new SignupLimiter(config.signupsPerIpPerHour, config.signupsPerDay),
   }, payments);
-  if (config.x402) console.log(`[share-host] taking x402 payments on ${config.x402.network}, settling them itself`);
+  if (config.x402) {
+    const by = config.x402.settlement.kind === "hub" ? `through the hub at ${config.x402.settlement.url}` : "itself";
+    console.log(`[share-host] taking x402 payments on ${config.x402.network}, settling them ${by}`);
+  }
   // Settles, expires or reports payments whose request ended before settlement, extends their links, prunes used claims.
-  const reconcileOnce = payments && createReconciler(store, payments);
+  // Only when this host settles: with a hub, the hub holds the ledger.
+  const local = payments?.mode === "local" ? payments : undefined;
+  const reconcileOnce = local && createReconciler(store, local);
   const reconcileNow = async () => {
     if (!reconcileOnce) return;
     try {
@@ -40,7 +45,7 @@ async function main(): Promise<void> {
         console.log(`[share-host] reconciled payments: ${r.settled} settled, ${r.refused} refused, ${r.delivered} delivered, ${r.open} open`);
       }
     } catch (err) {
-      payments.acceptor.reportError(err);
+      local?.acceptor.reportError(err);
     }
   };
   // Before the first sweep, so payments that settled while the host was down extend their links first.
