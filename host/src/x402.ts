@@ -1,6 +1,5 @@
 import { chmodSync, closeSync, existsSync, openSync } from "node:fs";
 import { join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { accept, viemChain, viemSubmitter, type AcceptDeps, type AcceptOptions, type Acceptor, type SellerLedgerPort } from "@zold/accept";
 import { openSqlite, SqliteRateLimiter, SqliteSellerLedger, SqliteSingleUseStore } from "@zold/accept/sqlite";
 import { createPublicClient, createWalletClient, http } from "viem";
@@ -11,30 +10,11 @@ import type { X402Config } from "./x402Config.js";
 /** How this host takes payments: @zold/accept verifies, settles on chain itself and delivers once. */
 export interface Payments {
   readonly acceptor: Acceptor;
-  /** The acceptor's ledger. Its `delivered` flag is set before the link is extended, so the host keeps its own `acks`. */
-  readonly ledger: SellerLedgerPort;
-  readonly acks: ExtensionAcks;
+  /** Payments are handled with deferDelivery, so a row is `delivered` only once its link was extended. */
+  readonly ledger: SellerLedgerPort & Required<Pick<SellerLedgerPort, "undelivered">>;
   /** Ids of links with a payment request in flight here: the sweep keeps them. */
   readonly paying: Set<string>;
 }
-
-/** Settled payments whose link this host has extended, written only once the extension is on disk. */
-export class ExtensionAcks {
-  constructor(private readonly db: DatabaseSync) {
-    db.exec("CREATE TABLE IF NOT EXISTS share_extension_acks (claim_key TEXT PRIMARY KEY, at INTEGER NOT NULL) STRICT");
-  }
-
-  has(claimKey: string): boolean {
-    return this.db.prepare("SELECT 1 FROM share_extension_acks WHERE claim_key = ?").get(claimKey) !== undefined;
-  }
-
-  add(claimKey: string, at: number): void {
-    this.db.prepare("INSERT OR IGNORE INTO share_extension_acks (claim_key, at) VALUES (?, ?)").run(claimKey, at);
-  }
-}
-
-/** Part of every claim key: retries are matched to their ledger row with it. */
-export const SELLER_ACCOUNT_ID = "share-me";
 
 const MONTH_SECONDS = 30 * 86_400;
 const GIBIBYTE = 1024 ** 3;
@@ -45,7 +25,6 @@ const MAX_PAYMENTS_IN_FLIGHT = 8;
 // Kept well under the MCP client's extend timeout; the reconciler delivers whatever settles later.
 export const SETTLEMENT_WAIT_MS = 20_000;
 const ADDRESS = /0x[0-9a-fA-F]{40}/g;
-const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
 // The ledger names payers next to what they paid for (personal data): owner-only, like tokens.json.
 const PRIVATE_FILE = 0o600;
 const PRIVATE_DIR = 0o700;
@@ -67,7 +46,7 @@ export function formatAmount(amount: number, decimals: number): string {
 export function acceptOptions(config: X402Config, publicBaseUrl: string): AcceptOptions {
   const origin = new URL(publicBaseUrl);
   return {
-    sellerAccountId: SELLER_ACCOUNT_ID,
+    sellerAccountId: "share-me",
     payTo: config.payTo,
     chainId: config.chainId,
     asset: config.asset,
@@ -83,28 +62,13 @@ export function acceptOptions(config: X402Config, publicBaseUrl: string): Accept
 }
 
 /**
- * Text safe to log: the given secrets removed, every URL cut to scheme and host (RPC errors carry the
- * full URL, and an RPC URL often holds an API key), and payers' addresses (personal data) masked.
+ * Where @zold/accept reports what no request is left to answer: the code and message, never the cause.
+ * It cuts every URL (and so an RPC key) before this; payers' addresses (personal data) are masked here.
  */
-export function redact(text: string, secrets: readonly string[]): string {
-  const urlsCut = text.replace(URL_IN_TEXT, (url) => {
-    try {
-      const { protocol, hostname } = new URL(url);
-      return `${protocol}//${hostname}/…`;
-    } catch {
-      return "<url>";
-    }
-  });
-  return secrets.filter(Boolean).reduce((t, secret) => t.split(secret).join("<redacted>"), urlsCut).replace(ADDRESS, "0x…");
-}
-
-/** Where @zold/accept reports what no request is left to answer: the code and a redacted message, never the cause. */
-export function paymentErrorReporter(config: X402Config): (error: unknown) => void {
-  return (error) => {
-    const { code, message } = error as { code?: unknown; message?: unknown };
-    const label = typeof code === "string" ? code : error instanceof Error ? error.name : "error";
-    console.error(`[share-host] payment ${label}:`, redact(String(message ?? error), [config.rpcUrl, config.gasPrivateKey]));
-  };
+export function reportPaymentError(error: unknown): void {
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  const label = typeof code === "string" ? code : error instanceof Error ? error.name : "error";
+  console.error(`[share-host] payment ${label}:`, String(message ?? error).replace(ADDRESS, "0x…"));
 }
 
 /** Opens <dataDir>/payments.db readable by this user only, its -wal and -shm included (SQLite copies the file's mode). */
@@ -131,7 +95,7 @@ export function openPayments(config: X402Config, dataDir: string, publicBaseUrl:
     submitter: viemSubmitter({
       wallet, client, chainId: config.chainId, asset: config.asset, payTo: config.payTo, maxGas: config.maxGas, maxFeePerGas: config.maxFeePerGas,
     }),
-    onError: paymentErrorReporter(config),
+    onError: reportPaymentError,
   };
-  return { acceptor: accept(acceptOptions(config, publicBaseUrl), deps), ledger, acks: new ExtensionAcks(db), paying: new Set() };
+  return { acceptor: accept(acceptOptions(config, publicBaseUrl), deps), ledger, paying: new Set() };
 }
