@@ -6,6 +6,8 @@ Files are hosted at [shareme.lol](https://shareme.lol) by default, or on [your o
 
 ## Quick start
 
+Needs Node 22.23.4+, 24.22.1+ or 26.12.1+ (the [October 2026 security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases); Node 20 is end-of-life and stays unpatched).
+
 Claude Code:
 
 ```bash

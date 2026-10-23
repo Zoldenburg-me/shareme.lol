@@ -1,0 +1,7 @@
+# Keeps the digest-pinned Node base image in host/Dockerfile current (tag and digest together).
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /host
+    schedule:
+      interval: weekly
