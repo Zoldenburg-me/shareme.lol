@@ -1,6 +1,6 @@
 # Build from the repo root, for Akash (amd64):
 #   docker buildx build --platform linux/amd64 -f host/Dockerfile -t ghcr.io/<you>/share-me-host:0.1.0 --push .
-FROM node:22-alpine AS build
+FROM node:22.23.4-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY host/package.json host/tsconfig.json host/
@@ -11,7 +11,7 @@ COPY host/src host/src
 RUN npx tsc -p host
 
 # Production dependencies of the host only (hoisted to /app/node_modules by the workspace install).
-FROM node:22-alpine AS deps
+FROM node:22.23.4-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY host/package.json host/
@@ -19,7 +19,7 @@ COPY host/vendor host/vendor
 COPY mcp/package.json mcp/
 RUN npm ci --omit=dev --ignore-scripts --workspace host && rm -f node_modules/share-me-host node_modules/share-me-mcp
 
-FROM node:22-alpine
+FROM node:22.23.4-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 # su-exec lets the entrypoint fix ownership of Akash's root-owned persistent volume, then drop to the node user.
 RUN apk add --no-cache su-exec
 ENV NODE_ENV=production DATA_DIR=/data PORT=8080

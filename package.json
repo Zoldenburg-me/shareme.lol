@@ -19,7 +19,7 @@
     "vitest": "^5.0.0"
   },
   "engines": {
-    "node": ">=22.13"
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "overrides": {
     "agentpay-hub": "file:host/vendor/agentpay-hub-0.1.0.tgz"
