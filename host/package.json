@@ -11,7 +11,7 @@
   "dependencies": {
     "@zold/accept": "file:vendor/zold-accept-0.2.0.tgz",
     "agentpay-hub": "file:vendor/agentpay-hub-0.1.0.tgz",
-    "markdown-it": "^14.3.2",
+    "markdown-it": "^14.3.3",
     "viem": "^2.57.3"
   },
   "devDependencies": {

@@ -13,7 +13,7 @@ const SITE_FACTOR = 2;
  * global cap over the last 24 hours, of which any one hour may spend only its 1/24 share, so a
  * burst can't block signups for a day. Half of each hour's share is kept for networks with no
  * signup in the last 24 hours, so a few networks coming back every hour can't fill it.
- * IP addresses are never written to disk and are forgotten after an hour; the 24-hour memory holds
+ * IP addresses are never written to disk and stop counting after an hour; the 24-hour memory holds
  * only a keyed hash of the network, under a random key that never leaves the process.
  */
 export class SignupLimiter {
