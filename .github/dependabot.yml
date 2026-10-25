@@ -5,3 +5,7 @@ updates:
     directory: /host
     schedule:
       interval: weekly
+    ignore:
+      # Stay on the current LTS line; a major Node move is a deliberate change, not a weekly bump.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]

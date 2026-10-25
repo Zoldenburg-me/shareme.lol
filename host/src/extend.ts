@@ -45,8 +45,14 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 /** The ledger's stand-in for a file id: sha256 cut to 16 hex, enough to match a live file, useless as a link. */
 export const fileRef = (fileId: string): string => createHash("sha256").update(fileId).digest("hex").slice(0, FILE_REF_LENGTH);
 
-const decodeBase64Json = (value: string | undefined): unknown =>
-  value === undefined ? undefined : JSON.parse(Buffer.from(value, "base64").toString("utf8"));
+// A malformed header from the hub leaves the quote out of the 402 rather than turning it into a 500.
+const decodeBase64Json = (value: string | undefined): unknown => {
+  try {
+    return value === undefined ? undefined : JSON.parse(Buffer.from(value, "base64").toString("utf8"));
+  } catch {
+    return undefined;
+  }
+};
 
 const HUB_RETRY = `Retry this request with the same payment (it keeps its price for ${HUB_RECORD_DAYS} days); don't sign a new one.`;
 

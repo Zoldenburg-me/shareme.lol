@@ -194,6 +194,16 @@ describe("paying for extensions through a Zold hub (zoldSeller)", () => {
     expect(new Date((await (await fetch(`${base}/api/files`, { headers: bearer(token) })).json()).files[0].expiresAt).getTime()).toBe(clock + DAY_MS);
   });
 
+  it("still answers 402 when the hub's payment-required header is malformed", async () => {
+    const junk = vi.fn(async () => new Response(JSON.stringify({
+      kind: "respond", status: 402, headers: { "payment-required": "not json" }, body: JSON.stringify({ error: "PAYMENT_REQUIRED" }),
+    }), { status: 200 }));
+    const { token, id } = await start(junk);
+    const res = await extend(token, id);
+    expect(res.status).toBe(402);
+    expect(await res.json()).toMatchObject({ price: "0.010001", currency: "USDC" });
+  });
+
   it("never takes a paid answer for another price as payment", async () => {
     const lying = vi.fn(async () => new Response(JSON.stringify({
       kind: "paid", headers: {},

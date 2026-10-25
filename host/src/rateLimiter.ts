@@ -7,7 +7,7 @@ interface Window {
 
 /**
  * In-memory fixed-window counter per key (a client IP or a token id). Keys are never written
- * to disk and are dropped once their window has passed.
+ * to disk; they stop counting once their window has passed and are dropped as the map fills.
  */
 export class RateLimiter {
   // Mutated in place: copying the map on every request would cost O(clients) per hit.

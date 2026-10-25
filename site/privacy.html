@@ -27,13 +27,13 @@
   <a class="back" href="/">← share-me</a>
   <h1>Privacy policy</h1>
   <p>How shareme.lol processes personal data under the GDPR (Datenschutzerklärung).</p>
-  <p class="meta">Last updated 18 Oct 2026</p>
+  <p class="meta">Last updated 25 Oct 2026</p>
 
   <h2>1. Controller</h2>
   <p>Zoldenburg UG (haftungsbeschränkt), Franz-Josef-Straße 11, 80801 München, Germany. Email: <a href="mailto:support@zoldhq.com">support@zoldhq.com</a></p>
 
   <h2>2. Visiting this website</h2>
-  <p>When you open a page, technical connection data (IP address, date and time, requested address, browser type) is processed to deliver the page and keep the service secure and stable (Art. 6 (1) (f) GDPR). Our own server does not record IP addresses; it logs only failed requests, with share links removed.</p>
+  <p>When you open a page, technical connection data (IP address, date and time, requested address, browser type) is processed to deliver the page and keep the service secure and stable (Art. 6 (1) (f) GDPR). Our own server does not record IP addresses; it logs only failed requests, with share links removed. To limit request rates, it counts requests per IP address (for API calls, per IP address and token) in memory only, never on disk. Each count runs for at most an hour; old entries are cleared as the tables fill or when the server restarts. The payment service's own counters are described in section 4. To keep part of each hour's signups for new users, it also keeps in memory a pseudonymous keyed hash of the network a signup came from (the IPv4 address, or the IPv6 /64 and /48) with the time of the signup; after 24 hours it is no longer used and is deleted at the next successful signup, and a restart deletes it at once (Art. 6 (1) (f) GDPR).</p>
 
   <h2>3. Shared files</h2>
   <p>share-me lets users upload files with an access token and pass on a link to them. We store the file, its name, size and expiry time on our server. Anyone who has the link can open the file until the link expires (24 hours by default, at most 7 days) or the uploader revokes it. The file is then deleted automatically. Links are random and not listed anywhere.</p>
