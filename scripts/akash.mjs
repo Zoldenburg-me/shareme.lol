@@ -1,28 +1,40 @@
 // Akash Console managed-wallet API for the shareme.lol deployment.
 //
-//   node scripts/akash.mjs go             # create, wait for bids, lease a vetted provider
+//   node scripts/akash.mjs go [provider]  # create, wait for bids, lease a vetted provider (or this one)
 //   node scripts/akash.mjs bids           # list bids for the saved dseq
-//   node scripts/akash.mjs lease <provider>   # accept that provider's bid
-//   node scripts/akash.mjs update [image] # switch share-host to a new image and resend its non-secret
-//                                       # env from the SDL; keeps lease, /data and the tokens
+//   node scripts/akash.mjs update [image] # switch share-host to a new image and resend its env
+//                                       # (secrets included); keeps lease and /data
 //                                       # (default image: the CI image of the current commit)
 //   node scripts/akash.mjs status         # deployment + lease state (no secrets)
 //   node scripts/akash.mjs close          # close it; unspent funds return, /data is wiped
 //
-// Needs AKASH_CONSOLE_API_KEY in ./.env. SDL: host/deploy.local.yaml (holds the tokens).
-// State (dseq, manifest) goes to .private/akash/state.json. Nothing here prints a secret.
+// Run it as `scripts/secrets.sh run -- node scripts/akash.mjs …`: the secrets (AKASH_CONSOLE_API_KEY and
+// sdl-secrets.mjs's SECRET_ENV) come from .env.age, decrypted into the environment only. SDL:
+// host/deploy.local.yaml, whose secret entries stay empty. State (dseq, provider; never the manifest, which
+// holds the secrets) goes to .private/akash/state.json. Nothing here prints a secret.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseEnv } from "node:util";
+import { fillSecrets, hostEnv } from "./sdl-secrets.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
-const env = parseEnv(readFileSync(path.join(ROOT, ".env"), "utf8"));
-const KEY = env.AKASH_CONSOLE_API_KEY;
-if (!KEY) throw new Error("add AKASH_CONSOLE_API_KEY to .env");
+const STATE = path.join(ROOT, ".private/akash/state.json");
+const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
+const save = () => writeFileSync(STATE, JSON.stringify(state, null, 2), { mode: 0o600 });
+// Older versions kept the manifest, which holds every secret, in the state file: drop it first thing.
+if ("manifest" in state) {
+  delete state.manifest;
+  save();
+  console.error("removed the old manifest from .private/akash/state.json; it held the deploy secrets in plaintext, so rotate them (secrets.sh set NAME --replace, then update)");
+}
+// A plaintext ./.env still works for the Console key, and only for it; the deploy secrets come from .env.age.
+const DOTENV = path.join(ROOT, ".env");
+const env = process.env;
+const KEY = env.AKASH_CONSOLE_API_KEY || (existsSync(DOTENV) ? parseEnv(readFileSync(DOTENV, "utf8")).AKASH_CONSOLE_API_KEY : undefined);
+if (!KEY) throw new Error("add AKASH_CONSOLE_API_KEY to .env.age (scripts/secrets.sh set AKASH_CONSOLE_API_KEY)");
 const BASE = "https://console-api.akash.network";
 const SDL = path.join(ROOT, "host/deploy.local.yaml");
-const STATE = path.join(ROOT, ".private/akash/state.json");
 const BLOCKS_PER_MONTH = 438_000; // ~6 s blocks
 // Vetted on 2026-09-29 (audited, >=98% 7-day uptime), in order of preference.
 const PREFERRED = [
@@ -34,8 +46,6 @@ const PREFERRED = [
 const BID_POLLS = 18;
 const BID_POLL_MS = 5000;
 
-const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
-const save = () => writeFileSync(STATE, JSON.stringify(state, null, 2), { mode: 0o600 });
 const perMonth = (amount) => ((Number(amount) * BLOCKS_PER_MONTH) / 1e6).toFixed(2);
 
 async function api(method, p, body) {
@@ -51,18 +61,15 @@ async function api(method, p, body) {
   return json;
 }
 
-function readSdl() {
-  const sdl = readFileSync(SDL, "utf8");
-  if (/REPLACE_WITH_/.test(sdl)) throw new Error("host/deploy.local.yaml still has a REPLACE_WITH_ placeholder (tunnel token?)");
-  return sdl;
-}
+const readTemplate = () => readFileSync(SDL, "utf8");
+const readSdl = () => fillSecrets(readTemplate(), env);
 
 const openBids = async (dseq) =>
   ((await api("GET", `/v1/bids?dseq=${dseq}`)).data ?? []).map((b) => b.bid ?? b).filter((b) => b.state === "open");
 
-async function leaseBid(bid) {
+async function leaseBid(bid, manifest) {
   const { dseq, gseq, oseq, provider } = bid.id;
-  await api("POST", "/v1/leases", { manifest: state.manifest, leases: [{ dseq, gseq, oseq, provider }] });
+  await api("POST", "/v1/leases", { manifest, leases: [{ dseq, gseq, oseq, provider }] });
   state.provider = provider;
   save();
   console.log(`lease created with ${provider} at ${bid.price.amount} ${bid.price.denom}/block ≈ ${perMonth(bid.price.amount)} ACT/month`);
@@ -78,26 +85,6 @@ function headImage() {
   return `ghcr.io/zoldenburg-me/share-me-host:sha-${sha}`;
 }
 
-// Env names that hold secrets: never resent by `update`, so they stay as stored.
-const SECRET_ENV = new Set(["SHARE_API_TOKEN", "TUNNEL_TOKEN"]);
-
-// share-host's env list from the SDL, minus secrets. The Console merges PATCHed env by name.
-function publicHostEnv() {
-  const lines = readSdl().split("\n");
-  const start = lines.findIndex((l) => /^  share-host:\s*$/.test(l));
-  const envAt = lines.findIndex((l, i) => i > start && /^    env:\s*$/.test(l));
-  if (start < 0 || envAt < 0) throw new Error("no share-host env block in host/deploy.local.yaml");
-  const entries = [];
-  for (const line of lines.slice(envAt + 1)) {
-    if (/^\s*#/.test(line) || !line.trim()) continue;
-    const item = /^      - ([A-Z0-9_]+)=(.*)$/.exec(line);
-    if (!item) break;
-    const value = item[2].replace(/\s+#.*$/, "").trim();
-    if (!SECRET_ENV.has(item[1])) entries.push([item[1], value]);
-  }
-  return Object.fromEntries(entries);
-}
-
 const need = () => { if (!state.dseq) throw new Error("no deployment yet — run go"); return state.dseq; };
 const [cmd, arg] = process.argv.slice(2);
 
@@ -105,38 +92,34 @@ if (cmd === "go") {
   // Bids close after a few minutes, so create and lease in one run.
   if (state.dseq) throw new Error(`deployment ${state.dseq} already exists — close it first`);
   const r = await api("POST", "/v1/deployments", { data: { sdl: readSdl() } });
+  // The manifest holds every secret, so it stays in memory: leasing happens in this run or not at all.
+  const { manifest } = r.data;
   state.dseq = r.data.dseq;
-  state.manifest = r.data.manifest;
   save();
   console.log(`created deployment dseq ${state.dseq}; waiting for bids…`);
   let chosen;
   for (let i = 0; i < BID_POLLS && !chosen; i++) {
     await new Promise((ok) => setTimeout(ok, BID_POLL_MS));
     const open = await openBids(state.dseq);
-    chosen = PREFERRED.map((p) => open.find((b) => b.id.provider === p)).find(Boolean);
+    chosen = (arg ? [arg] : PREFERRED).map((p) => open.find((b) => b.id.provider === p)).find(Boolean);
     if (!chosen && i >= 11 && open.length) {
       console.log(`no vetted provider bid; open bids: ${open.map((b) => `${b.id.provider} (${perMonth(b.price.amount)} ACT/month)`).join(", ")}`);
       break;
     }
   }
-  if (!chosen) throw new Error("no vetted bid — nothing leased. `bids` + `lease <provider>` to pick another, or `close` to get the deposit back");
-  await leaseBid(chosen);
+  if (!chosen) throw new Error("no vetted bid — nothing leased. `close` to get the deposit back, then retry `go`, or `go <provider>` for a provider listed above (it has to bid again)");
+  await leaseBid(chosen, manifest);
 } else if (cmd === "bids") {
   const bids = await openBids(need());
   if (!bids.length) console.log("no open bids — wait 30–60 s and ask again");
   for (const b of bids) console.log(`${b.id.provider}  ${b.price.amount} ${b.price.denom}/block ≈ ${perMonth(b.price.amount)} ACT/month`);
-} else if (cmd === "lease") {
-  if (!arg) throw new Error("usage: lease <provider address>");
-  const bid = (await openBids(need())).find((b) => b.id.provider === arg);
-  if (!bid) throw new Error(`no open bid from ${arg}`);
-  await leaseBid(bid);
 } else if (cmd === "update") {
-  // PATCH sends the image and non-secret env; the tokens stay as stored. Prints states only.
+  // PATCH sends the image and share-host's whole env, secrets from .env.age. Prints names and states only.
   const image = arg ?? headImage();
   if (!/^ghcr\.io\/[\w./-]+:[\w.-]+$/.test(image)) throw new Error("usage: update [ghcr.io/<owner>/share-me-host:<tag>]");
-  const env = publicHostEnv();
-  console.log(`share-host env sent: ${Object.keys(env).join(", ")}`);
-  const r = await api("PATCH", `/v1/deployments/${need()}`, { data: { services: { "share-host": { image, env } } } });
+  const hostVars = hostEnv(readTemplate(), env);
+  console.log(`share-host env sent: ${Object.keys(hostVars).join(", ")}`);
+  const r = await api("PATCH", `/v1/deployments/${need()}`, { data: { services: { "share-host": { image, env: hostVars } } } });
   const d = r.data ?? {};
   console.log(JSON.stringify({
     dseq: state.dseq,
@@ -156,8 +139,8 @@ if (cmd === "go") {
 } else if (cmd === "close") {
   await api("DELETE", `/v1/deployments/${need()}`);
   console.log(`closed deployment ${state.dseq}`);
-  delete state.dseq; delete state.manifest; delete state.provider;
+  delete state.dseq; delete state.provider;
   save();
 } else {
-  console.log("usage: go | bids | lease <provider> | update <image> | status | close");
+  console.log("usage: go [provider] | bids | update [image] | status | close");
 }
