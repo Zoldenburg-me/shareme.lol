@@ -69,6 +69,8 @@ case "$cmd" in
     # One set at a time: two that read the same file would each drop the other's value.
     lock="$enc.lock"; tmp="${enc%.age}.tmp.age"; held=""
     trap '[[ -n "$held" ]] && rm -f "$tmp" "$tmp.prev" && rmdir "$lock"' EXIT
+    # A signal exits through the EXIT trap too, so Ctrl-C never leaves the lock behind.
+    trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
     mkdir "$lock" 2>/dev/null || { echo "another secrets.sh set is running on $enc (or one was killed: remove $lock)" >&2; exit 1; }
     held=1
     plaintext="$("$AGE" -d -i <(age_identity) "$enc")" || { echo "could not decrypt $enc; nothing changed" >&2; exit 1; }

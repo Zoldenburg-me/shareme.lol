@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmdirSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -123,5 +123,19 @@ describe("deploy secrets: .env.age → akash.mjs's environment → SDL", () => {
     rmdirSync(`${encrypted}.lock`);
     expect(set(["OTHER"], "x").status).toBe(0);
     expect(existsSync(`${encrypted}.lock`)).toBe(false);
+  });
+
+  it("releases the lock when set is interrupted (Ctrl-C reaches the whole process group)", async () => {
+    const child = spawn(SECRETS, ["set", "WAITING"], { detached: true, stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, AGE_IDENTITY_FILE: identity, AGE_RECIPIENTS_FILE: recipients, SECRETS_ENV_FILE: encrypted } });
+    const exited = new Promise<number | null>((ok) => child.on("exit", (code) => ok(code)));
+    try {
+      for (let i = 0; i < 50 && !existsSync(`${encrypted}.lock`); i++) await new Promise((ok) => setTimeout(ok, 50));
+      expect(existsSync(`${encrypted}.lock`)).toBe(true);
+      process.kill(-child.pid!, "SIGINT");
+      expect(await exited).toBe(130);
+      expect(existsSync(`${encrypted}.lock`)).toBe(false);
+    } finally {
+      try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
+    }
   });
 });
