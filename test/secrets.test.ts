@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, rmdirSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -116,5 +116,12 @@ describe("deploy secrets: .env.age → akash.mjs's environment → SDL", () => {
     expect(read()).toEqual([API_TOKEN, HUB_KEY, tricky]);
     expect(set(["TUNNEL_TOKEN", "--replace"], "rotated\n").status).toBe(0);
     expect(read()).toEqual([API_TOKEN, HUB_KEY, "rotated"]);
+    // a second set while one holds the lock is refused, and the lock is left to its owner
+    mkdirSync(`${encrypted}.lock`);
+    expect(set(["OTHER"], "x").stderr).toContain("another secrets.sh set is running");
+    expect(existsSync(`${encrypted}.lock`)).toBe(true);
+    rmdirSync(`${encrypted}.lock`);
+    expect(set(["OTHER"], "x").status).toBe(0);
+    expect(existsSync(`${encrypted}.lock`)).toBe(false);
   });
 });
