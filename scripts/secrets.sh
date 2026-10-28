@@ -66,6 +66,13 @@ case "$cmd" in
     shift
     enc="$ENV_AGE"
     [[ -f "$enc" ]] || { echo "no $enc: run 'secrets.sh encrypt .env' first" >&2; exit 1; }
+    # One set at a time: two that read the same file would each drop the other's value.
+    lock="$enc.lock"; tmp="${enc%.age}.tmp.age"; held=""
+    trap '[[ -n "$held" ]] && rm -f "$tmp" "$tmp.prev" && rmdir "$lock"' EXIT
+    # A signal exits through the EXIT trap too, so Ctrl-C never leaves the lock behind.
+    trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+    mkdir "$lock" 2>/dev/null || { echo "another secrets.sh set is running on $enc (or one was killed: remove $lock)" >&2; exit 1; }
+    held=1
     plaintext="$("$AGE" -d -i <(age_identity) "$enc")" || { echo "could not decrypt $enc; nothing changed" >&2; exit 1; }
     value=""
     if [[ " $* " != *" --random "* ]]; then
@@ -80,15 +87,14 @@ case "$cmd" in
     # decrypts and holds NAME. Plaintext moves through pipes from the printf
     # builtin only (see init); env-set.mjs refuses anything that would change
     # another value.
-    tmp="${enc%.age}.tmp.age"
-    trap 'rm -f "$tmp"' EXIT
     node "$ROOT/scripts/env-set.mjs" "$name" "$@" 3< <(printf '%s\n' "$plaintext") 4< <(printf '%s' "$value") \
       | "$AGE" -R "$AGE_RECIPIENTS" -o "$tmp"
     unset plaintext value
     "$AGE" -d -i <(age_identity) "$tmp" \
       | node -e 'const t = require("node:fs").readFileSync(0, "utf8"); process.exit(Object.hasOwn(require("node:util").parseEnv(t), process.argv[1]) ? 0 : 1)' "$name" \
       || { echo "the re-encrypted file does not read back with $name; $enc is unchanged" >&2; exit 1; }
-    mv "$enc" "${enc%.age}.prev.age"
+    # Copy, then rename over: $enc is never missing, even if this stops halfway.
+    cp -p "$enc" "$tmp.prev" && mv "$tmp.prev" "${enc%.age}.prev.age"
     mv "$tmp" "$enc"
     echo "set $name in $enc, encrypted to $AGE_RECIPIENTS; the previous file is ${enc%.age}.prev.age"
     ;;

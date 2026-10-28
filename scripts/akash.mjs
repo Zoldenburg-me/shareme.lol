@@ -16,7 +16,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseEnv } from "node:util";
-import { fillSecrets, hostEnv } from "./sdl-secrets.mjs";
+import { SECRET_ENV, fillSecrets, hostEnv } from "./sdl-secrets.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const STATE = path.join(ROOT, ".private/akash/state.json");
@@ -48,6 +48,13 @@ const BID_POLL_MS = 5000;
 
 const perMonth = (amount) => ((Number(amount) * BLOCKS_PER_MONTH) / 1e6).toFixed(2);
 
+// An error body may echo the SDL or manifest we sent: blank every secret, raw and JSON-escaped, before printing.
+function redact(text) {
+  const values = [KEY, ...[...SECRET_ENV].map((n) => env[n])].filter(Boolean);
+  for (const v of values) for (const form of [v, JSON.stringify(v).slice(1, -1)]) text = text.split(form).join("[redacted]");
+  return text;
+}
+
 async function api(method, p, body) {
   const res = await fetch(BASE + p, {
     method,
@@ -57,7 +64,7 @@ async function api(method, p, body) {
   const text = await res.text();
   let json;
   try { json = JSON.parse(text); } catch { json = text; }
-  if (!res.ok) throw new Error(`${method} ${p} -> ${res.status}: ${(typeof json === "string" ? json : JSON.stringify(json)).slice(0, 500)}`);
+  if (!res.ok) throw new Error(`${method} ${p} -> ${res.status}: ${redact(typeof json === "string" ? json : JSON.stringify(json)).slice(0, 500)}`);
   return json;
 }
 

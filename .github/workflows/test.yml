@@ -1,0 +1,23 @@
+# Tests every pull request. host-image.yml tests again before it builds on main.
+name: test
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.4
+          cache: npm
+
+      - name: Test
+        # age (pinned, SHA-256 checked) for the deploy-secrets test
+        run: scripts/fetch-age.sh && npm ci && npm test
